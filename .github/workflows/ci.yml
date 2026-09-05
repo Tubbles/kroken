@@ -1,0 +1,21 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install pinned Odin toolchain
+        run: scripts/setup-toolchain.sh
+      - name: Test and build
+        run: scripts/check.sh
+      - name: Upload binary
+        uses: actions/upload-artifact@v7
+        with:
+          name: kroken-linux-amd64
+          path: build/kroken
