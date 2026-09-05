@@ -1,6 +1,6 @@
 # WI-0001: Core loop
 
-Status: implemented
+Status: verified (scripts/check.sh green locally and in CI run 33994515137, live claude run on 2026-09-05)
 
 ## Goal
 
