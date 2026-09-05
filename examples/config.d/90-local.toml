@@ -1,0 +1,13 @@
+# ~/.config/kroken/config.d/90-local.toml
+#
+# Machine-local: keep this file out of version control. Sorted after
+# 10-shared.toml, so it wins on any key both files set.
+
+# A second claude.ai login. Create it once with:
+#   CLAUDE_CONFIG_DIR=~/.claude-work claude
+[profiles.work.claude.env]
+CLAUDE_CONFIG_DIR = "~/.claude-work"
+
+# Direct API access instead of a subscription.
+[profiles.api.claude.env]
+ANTHROPIC_API_KEY = "sk-ant-..."

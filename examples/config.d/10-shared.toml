@@ -1,0 +1,7 @@
+# ~/.config/kroken/config.d/10-shared.toml
+#
+# Safe to commit to a dotfiles repository: no secrets, no machine paths.
+
+[profiles.fast.claude]
+model = "sonnet"
+effort = "low"

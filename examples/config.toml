@@ -1,0 +1,16 @@
+# ~/.config/kroken/config.toml
+#
+# Every key is optional. Run `kroken config` to see the effective values,
+# including the default prompts. See doc/configuration.md for the schema.
+
+[claude]
+# command = "claude"
+# model = "opus"
+# effort = "high"
+tools = ["Read", "Grep", "Glob"]   # read-only; [] turns tools off entirely
+# extra_args = ["--permission-prompts", "none"]
+# max_budget_usd = 0.50
+
+[log]
+enabled = true
+# directory = "~/.local/state/kroken/log"
