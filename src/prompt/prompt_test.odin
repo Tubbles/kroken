@@ -41,3 +41,36 @@ detects_languages :: proc(t: ^testing.T) {
 	testing.expect_value(t, language_of("weird.xyz"), "xyz")
 	testing.expect_value(t, language_of("README"), "unknown")
 }
+
+@(test)
+extracts_line_ranges :: proc(t: ^testing.T) {
+	content := "one\ntwo\r\nthree\nfour"
+	single, single_ok := extract_lines(content, 2, 2)
+	testing.expect(t, single_ok)
+	testing.expect_value(t, single, "two\r\n")
+	range_text, range_ok := extract_lines(content, 1, 3)
+	testing.expect(t, range_ok)
+	testing.expect_value(t, range_text, "one\ntwo\r\nthree\n")
+	last, last_ok := extract_lines(content, 4, 4)
+	testing.expect(t, last_ok)
+	testing.expect_value(t, last, "four")
+	whole, whole_ok := extract_lines("a\nb\n", 1, 2)
+	testing.expect(t, whole_ok)
+	testing.expect_value(t, whole, "a\nb\n")
+
+	_, past_end := extract_lines(content, 4, 5)
+	testing.expect_value(t, past_end, false)
+	_, phantom := extract_lines("a\nb\n", 3, 3)
+	testing.expect_value(t, phantom, false)
+	_, reversed := extract_lines(content, 3, 2)
+	testing.expect_value(t, reversed, false)
+	_, zero := extract_lines(content, 0, 1)
+	testing.expect_value(t, zero, false)
+	_, empty := extract_lines("", 1, 1)
+	testing.expect_value(t, empty, false)
+
+	testing.expect_value(t, count_lines(""), 0)
+	testing.expect_value(t, count_lines("a"), 1)
+	testing.expect_value(t, count_lines("a\nb\n"), 2)
+	testing.expect_value(t, count_lines("a\nb"), 2)
+}

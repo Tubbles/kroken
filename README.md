@@ -26,11 +26,14 @@ Put `build/kroken` on your `PATH`, for example with a symlink into `~/.local/bin
 ## Usage
 
 ```sh
+kroken complete --file path/to/source.c --start 12 --end 20          # from a shell: takes lines 12-20 of the file
 kroken complete --file path/to/source.c --start 12:1 --end 20:1 < selection.txt
 kroken complete --file path/to/source.c --selection-file /tmp/selection.txt
 kroken config --file path/to/source.c    # print the effective configuration and where it came from
 kroken version
 ```
+
+The selection is taken from `--selection-file` if given, else from stdin when something is piped in, else from lines `--start` through `--end` of the file. A terminal on stdin is never read.
 
 See [doc/README.md](doc/README.md) for the configuration reference and the editor integration protocol.
 

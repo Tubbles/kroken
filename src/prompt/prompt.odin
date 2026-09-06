@@ -168,3 +168,41 @@ language_of :: proc(file: string) -> string {
 	}
 	return extension[1:]
 }
+
+// Returns lines `start_line` through `end_line` (1-based, inclusive) of
+// `content`, line endings included, for invocations from a shell where
+// nothing is piped in. Fails when the range is empty or past the end.
+extract_lines :: proc(content: string, start_line: int, end_line: int) -> (text: string, ok: bool) {
+	if start_line < 1 || end_line < start_line {
+		return "", false
+	}
+	current_line := 1
+	line_start := 0
+	start_offset := 0
+	for line_start < len(content) {
+		if current_line == start_line {
+			start_offset = line_start
+		}
+		line_end := len(content)
+		if newline := strings.index_byte(content[line_start:], '\n'); newline >= 0 {
+			line_end = line_start + newline + 1
+		}
+		if current_line == end_line {
+			return content[start_offset:line_end], true
+		}
+		line_start = line_end
+		current_line += 1
+	}
+	return "", false
+}
+
+count_lines :: proc(content: string) -> int {
+	if content == "" {
+		return 0
+	}
+	count := strings.count(content, "\n")
+	if content[len(content) - 1] != '\n' {
+		count += 1
+	}
+	return count
+}

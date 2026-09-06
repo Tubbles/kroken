@@ -5,7 +5,7 @@ kroken is a one-shot command line process. The editor spawns it in the backgroun
 ## Run flow (`kroken complete`)
 
 1. Parse flags: `--file` (required), `--start LINE[:COLUMN]`, `--end LINE[:COLUMN]`, `--selection-file`, `--profile`, `--model`, `--dry-run`.
-2. Read the selection from `--selection-file` or stdin.
+2. Read the selection: `--selection-file` if given, else stdin when it is not a terminal, else lines `--start` through `--end` of the target file. With none of those, fail with a usage message rather than block on a terminal.
 3. Resolve configuration (see below) starting from the directory of `--file`.
 4. Render the prompt template with the placeholders documented in `doc/configuration.md`.
 5. Assemble the `claude -p` command line: `--output-format json`, `--json-schema` requesting `{"replacement": string}`, `--append-system-prompt` with the configured system prompt, `--tools`, `--model`, `--effort`, `--add-dir <git root>`, `--no-session-persistence`, `--max-budget-usd`, then `extra_args` verbatim.

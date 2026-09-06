@@ -36,8 +36,8 @@ run "kroken <command> --help" for the flags of a command
 
 Complete_Options :: struct {
 	file:           string `args:"name=file,required" usage:"path of the file the selection comes from"`,
-	start:          string `args:"name=start" usage:"selection start as LINE[:COLUMN], 1-based"`,
-	end:            string `args:"name=end" usage:"selection end as LINE[:COLUMN], 1-based, inclusive"`,
+	start:          string `args:"name=start" usage:"selection start as LINE[:COLUMN], 1-based; with nothing piped in, lines --start..--end are taken from --file"`,
+	end:            string `args:"name=end" usage:"selection end as LINE[:COLUMN], 1-based, inclusive; defaults to --start"`,
 	selection_file: string `args:"name=selection-file" usage:"read the selection from this file instead of stdin"`,
 	profile:        string `args:"name=profile" usage:"configuration profile to apply, overrides the profile key"`,
 	model:          string `args:"name=model" usage:"model passed to claude, overrides claude.model"`,
@@ -103,7 +103,14 @@ run_complete :: proc(arguments: []string) -> Exit_Code {
 		fmt.eprintln("kroken: --start and --end must look like LINE or LINE:COLUMN")
 		return .Usage
 	}
-	selection_text, selection_ok := read_selection(options.selection_file)
+	if end_line == 0 {
+		end_line = start_line
+	}
+	if end_line < start_line || (end_line > 0 && start_line == 0) {
+		fmt.eprintln("kroken: --end must not precede --start, and --end needs --start")
+		return .Usage
+	}
+	selection_text, selection_ok := read_selection(options.selection_file, file, start_line, end_line)
 	if !selection_ok {
 		return .Usage
 	}
@@ -230,19 +237,39 @@ parse_position :: proc(text: string) -> (line: int, ok: bool) {
 	return line, ok && line > 0
 }
 
-read_selection :: proc(selection_file: string) -> (text: string, ok: bool) {
+// The selection comes from --selection-file, else from stdin when
+// something is piped in, else from lines --start..--end of the target
+// file. A terminal on stdin is never read: that only hangs.
+read_selection :: proc(selection_file: string, file: string, start_line: int, end_line: int) -> (text: string, ok: bool) {
 	content: []byte
 	error: os.Error
 	if selection_file != "" {
 		content, error = os.read_entire_file_from_path(selection_file, context.allocator)
-	} else {
+	} else if !os.is_tty(os.stdin) {
 		content, error = os.read_entire_file_from_file(os.stdin, context.allocator)
 	}
 	if error != nil {
 		fmt.eprintf("kroken: cannot read the selection: %v\n", error)
 		return "", false
 	}
-	return string(content), true
+	if len(content) > 0 {
+		return string(content), true
+	}
+	if start_line == 0 {
+		fmt.eprintln("kroken: no selection: pipe it on stdin, pass --selection-file, or give --start/--end to take those lines from --file")
+		return "", false
+	}
+	file_content, read_error := os.read_entire_file_from_path(file, context.allocator)
+	if read_error != nil {
+		fmt.eprintf("kroken: cannot read %s: %v\n", file, read_error)
+		return "", false
+	}
+	text, ok = prompt.extract_lines(string(file_content), start_line, end_line)
+	if !ok {
+		fmt.eprintf("kroken: %s has %d lines, cannot take lines %d-%d\n", file, prompt.count_lines(string(file_content)), start_line, end_line)
+		return "", false
+	}
+	return text, true
 }
 
 relative_to :: proc(file: string, base: string) -> string {
