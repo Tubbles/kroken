@@ -51,7 +51,7 @@ Objects merge recursively. Any other value, arrays included, replaces the value 
 | Backend | Runs | Instruction files it loads | Login |
 |---------|------|----------------------------|-------|
 | `claude` | Claude Code, `claude -p` | `~/.claude/CLAUDE.md`, then `CLAUDE.md` and `CLAUDE.local.md` from the filesystem root down to the file's directory | `claude auth login` (claude.ai subscription), `ANTHROPIC_API_KEY`, or the Bedrock, Vertex, and Foundry variables Claude Code documents. A second login lives in another `CLAUDE_CONFIG_DIR`. |
-| `codex` | OpenAI Codex CLI, `codex exec` | `~/.codex/AGENTS.md`, then `AGENTS.md` (or `AGENTS.override.md`) from the project root down to the file's directory | `codex login` (ChatGPT subscription) or `OPENAI_API_KEY`. A second login lives in another `CODEX_HOME`. |
+| `codex` | OpenAI Codex CLI, `codex exec` | `~/.codex/AGENTS.md`, then `AGENTS.md` (or `AGENTS.override.md`) from the project root down to the file's directory | `codex login` (any ChatGPT plan, the Free plan included, within its quota) or `OPENAI_API_KEY`. A second login lives in another `CODEX_HOME`. |
 
 `--backend` on the command line overrides the key for one run, and `--model` applies to whichever backend runs.
 
