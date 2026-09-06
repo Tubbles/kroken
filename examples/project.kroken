@@ -1,22 +1,25 @@
-# <repository>/.kroken
-#
-# Project settings, applied on top of the user configuration. A .kroken
-# in a subdirectory overrides this one for files below it.
+// <repository>/.kroken
+//
+// Project settings, applied on top of the user configuration. A .kroken
+// in a subdirectory overrides this one for files below it.
 
 profile = "work"
 
-[claude]
-model = "opus"
-effort = "high"
+claude = {
+    model = "opus"
+    effort = "high"
+}
 
-[prompt]
-template = """
-File: {location}
-Language: {language}
-
-<selection>
-{selection}
-</selection>
-
-Replace the selection according to the intent it expresses. This project prefers small functions and exhaustive error handling.
-"""
+prompt = {
+    // Multi-line text is an array of lines, joined with newlines.
+    template = [
+        "File: {location}"
+        "Language: {language}"
+        ""
+        "<selection>"
+        "{selection}"
+        "</selection>"
+        ""
+        "Replace the selection according to the intent it expresses. This project prefers small functions and exhaustive error handling."
+    ]
+}

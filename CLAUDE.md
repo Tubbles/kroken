@@ -13,11 +13,11 @@ LLM coding harness driven from a text editor, written in Odin. Wraps `claude -p`
 ## Layout
 
 - `src/cli/` is the `main` package and owns argument parsing, exit codes, and wiring only.
-- `src/toml/` is the TOML subset parser and writer. It knows nothing about kroken.
-- `src/config/` discovers, layers, and merges configuration files and applies profiles.
+- `src/config/` discovers, layers, and merges SJSON configuration files (`sjson.odin` wraps `core:encoding/json` in SJSON mode), applies profiles, and produces the typed config and its dump.
 - `src/prompt/` renders the prompt template and detects the language from the file name.
 - `src/claude/` assembles the `claude -p` command line, runs it, and parses its JSON result.
-- Packages are imported through the `kroken` collection: `import "kroken:toml"`.
+- Packages are imported through the `kroken` collection: `import "kroken:config"`.
+- Configuration files are SJSON (Bitsquid simplified JSON); never reintroduce a hand-written parser, the core library's SJSON mode is the parser.
 - `doc/` holds the living documentation, `doc/log/` write-once decision logs by date, `doc/work/` work items.
 - `tmp/`, `work/`, `build/`, `toolchain/` are git ignored.
 

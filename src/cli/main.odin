@@ -13,7 +13,6 @@ import "core:time"
 import "kroken:claude"
 import "kroken:config"
 import "kroken:prompt"
-import "kroken:toml"
 
 VERSION :: "0.1.0"
 
@@ -72,12 +71,14 @@ main :: proc() {
 	os.exit(int(code))
 }
 
-parse_options :: proc(options: ^$T, arguments: []string, command_name: string) -> (ok: bool) {
+// `description` is printed above the flag table on --help.
+parse_options :: proc(options: ^$T, arguments: []string, command_name: string, description: string) -> (ok: bool) {
 	error := flags.parse(options, arguments, .Unix)
 	if error == nil {
 		return true
 	}
 	if _, is_help := error.(flags.Help_Request); is_help {
+		fmt.print(description)
 		flags.write_usage(os.to_stream(os.stdout), T, command_name, .Unix)
 		os.exit(int(Exit_Code.Success))
 	}
@@ -87,7 +88,7 @@ parse_options :: proc(options: ^$T, arguments: []string, command_name: string) -
 
 run_complete :: proc(arguments: []string) -> Exit_Code {
 	options: Complete_Options
-	if !parse_options(&options, arguments, "kroken complete") {
+	if !parse_options(&options, arguments, "kroken complete", COMPLETE_DESCRIPTION) {
 		return .Usage
 	}
 	file, path_error := os.get_absolute_path(options.file, context.allocator)
@@ -169,7 +170,7 @@ run_complete :: proc(arguments: []string) -> Exit_Code {
 
 run_config :: proc(arguments: []string) -> Exit_Code {
 	options: Config_Options
-	if !parse_options(&options, arguments, "kroken config") {
+	if !parse_options(&options, arguments, "kroken config", config_description()) {
 		return .Usage
 	}
 	directory: string
@@ -204,9 +205,36 @@ run_config :: proc(arguments: []string) -> Exit_Code {
 		}
 	}
 	fmt.printf("# profile in effect: %s\n\n", resolved.profile == "" ? "(none)" : resolved.profile)
-	tree := config.to_table(resolved.config)
-	fmt.print(toml.write(tree))
+	text, dump_ok := config.dump(resolved.config)
+	if !dump_ok {
+		fmt.eprintln("kroken: cannot render the configuration")
+		return .Runner
+	}
+	fmt.println(text)
 	return .Success
+}
+
+COMPLETE_DESCRIPTION :: `Reads a selection, runs claude -p with the file's directory as its working
+directory (so every CLAUDE.md above the file applies), and prints the
+replacement on stdout. Status goes to stderr.
+
+`
+
+// Built at runtime so the paths shown are the ones this machine uses.
+config_description :: proc() -> string {
+	environment := config.environment_from_process()
+	system_directories, _ := strings.join(environment.config_directories, ", ")
+	builder := strings.builder_make()
+	fmt.sbprint(&builder, "Prints the configuration in effect and the files it came from.\n")
+	fmt.sbprint(&builder, "Files are merged lowest precedence first, later ones overriding key by key:\n")
+	fmt.sbprintf(&builder, "  1. <dir>/kroken/%s for each $XDG_CONFIG_DIRS entry, last entry first (now: %s)\n", config.CONFIG_FILE_NAME, system_directories)
+	fmt.sbprintf(&builder, "  2. %s/kroken/%s\n", environment.config_home, config.CONFIG_FILE_NAME)
+	fmt.sbprintf(&builder, "  3. %s/kroken/config.d/*%s, sorted by file name\n", environment.config_home, config.DROP_IN_EXTENSION)
+	fmt.sbprintf(&builder, "  4. %s in the starting directory and in each parent, filesystem root first\n", config.PROJECT_FILE_NAME)
+	fmt.sbprint(&builder, "  5. the selected profile (--profile, else the merged \"profile\" key) on top of everything\n")
+	fmt.sbprint(&builder, "The starting directory is the directory of --file, else the working directory.\n")
+	fmt.sbprintf(&builder, "Run logs go to %s/kroken/log unless log.directory says otherwise.\n\n", environment.state_home)
+	return strings.to_string(builder)
 }
 
 source_kind_name :: proc(kind: config.Source_Kind) -> string {

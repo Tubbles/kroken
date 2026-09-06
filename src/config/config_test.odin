@@ -1,9 +1,9 @@
 package config
 
+import "core:encoding/json"
 import "core:os"
 import "core:strings"
 import "core:testing"
-import "kroken:toml"
 
 @(private = "file")
 Fixture :: struct {
@@ -31,17 +31,14 @@ path :: proc(elements: ..string) -> string {
 make_fixture :: proc(t: ^testing.T) -> Fixture {
 	root, error := os.make_directory_temp("", "kroken-config-test-*", context.allocator)
 	testing.expect_value(t, error, nil)
-	config_home := path(root, "config-home")
-	system_a := path(root, "etc-a")
-	system_b := path(root, "etc-b")
 	config_directories := make([]string, 2)
-	config_directories[0] = system_a
-	config_directories[1] = system_b
+	config_directories[0] = path(root, "etc-a")
+	config_directories[1] = path(root, "etc-b")
 	fixture := Fixture {
 		root = root,
 		environment = Environment {
 			home = path(root, "home"),
-			config_home = config_home,
+			config_home = path(root, "config-home"),
 			config_directories = config_directories,
 			state_home = path(root, "state"),
 		},
@@ -65,17 +62,118 @@ destroy_fixture :: proc(fixture: ^Fixture) {
 	delete(fixture.root)
 }
 
+@(private = "file")
+parse_or_fail :: proc(t: ^testing.T, source: string, loc := #caller_location) -> json.Object {
+	root, error, ok := parse_document(source)
+	if !ok {
+		testing.expectf(t, false, "parse failed at %d:%d: %s", error.line, error.column, error.message, loc = loc)
+		return json.Object(make(map[string]json.Value))
+	}
+	return root
+}
+
+@(test)
+parses_sjson_documents :: proc(t: ^testing.T) {
+	root := parse_or_fail(t, `
+// a comment
+profile = "work"     /* another */
+claude = {
+    model: "opus"
+    tools = ["Read", "Grep",]
+    max_budget_usd = 1.5
+    env = { A = "1", B = "2" }
+}
+flag = true
+count = -3
+`)
+	defer json.destroy_value(root)
+
+	testing.expect_value(t, string(root["profile"].(json.String)), "work")
+	claude := root["claude"].(json.Object)
+	testing.expect_value(t, string(claude["model"].(json.String)), "opus")
+	testing.expect_value(t, len(claude["tools"].(json.Array)), 2)
+	testing.expect_value(t, f64(claude["max_budget_usd"].(json.Float)), 1.5)
+	testing.expect_value(t, string(claude["env"].(json.Object)["B"].(json.String)), "2")
+	testing.expect_value(t, bool(root["flag"].(json.Boolean)), true)
+	testing.expect_value(t, i64(root["count"].(json.Integer)), -3)
+}
+
+@(test)
+empty_documents_are_empty_objects :: proc(t: ^testing.T) {
+	for source in ([]string{"", "   \n\n", "// only a comment\n", "/* block */\n"}) {
+		root, error, ok := parse_document(source)
+		testing.expectf(t, ok, "%q failed: %s", source, error.message)
+		if ok {
+			testing.expect_value(t, len(root), 0)
+			json.destroy_value(root)
+		}
+	}
+}
+
+@(test)
+reports_parse_errors_with_positions :: proc(t: ^testing.T) {
+	// A "0" line means the position is not checked: the core tokenizer
+	// reports a duplicate key at the position of its inserted comma.
+	cases := [][3]string {
+		{"a = 1\na = 2\n", "duplicate key", "0"},
+		{"a = \"open\nb = 1\n", "unterminated string", "1"},
+		{"x = 1\n// it's fine\ny = 'also\n", "unterminated string", "3"},
+		{"a =\n", "unexpected token", "2"},
+		{"a.b = 1\n", "expected '=' after the key", "1"},
+		{"[1, 2]\n", "the document must consist of key = value pairs", "1"},
+	}
+	for test_case in cases {
+		_, error, ok := parse_document(test_case[0])
+		testing.expectf(t, !ok, "%q parsed but should not have", test_case[0])
+		testing.expect_value(t, error.message, test_case[1])
+		expected_line := int(test_case[2][0] - '0')
+		testing.expectf(t, expected_line == 0 || error.line == expected_line, "%q: expected line %s, got %d", test_case[0], test_case[2], error.line)
+	}
+}
+
+@(test)
+merge_is_deep_and_source_wins :: proc(t: ^testing.T) {
+	destination := parse_or_fail(t, `
+profile = "default"
+claude = { model = "opus", tools = ["Read", "Grep", "Glob"], env = { A = "1" } }
+`)
+	defer json.destroy_value(destination)
+	source := parse_or_fail(t, `
+profile = "work"
+claude = { tools = ["Read"], env = { B = "2" } }
+log = { enabled = false }
+`)
+	defer json.destroy_value(source)
+
+	merge(&destination, source)
+
+	testing.expect_value(t, string(destination["profile"].(json.String)), "work")
+	claude := destination["claude"].(json.Object)
+	testing.expect_value(t, string(claude["model"].(json.String)), "opus")
+	testing.expect_value(t, len(claude["tools"].(json.Array)), 1)
+	env := claude["env"].(json.Object)
+	testing.expect_value(t, string(env["A"].(json.String)), "1")
+	testing.expect_value(t, string(env["B"].(json.String)), "2")
+	testing.expect_value(t, bool(destination["log"].(json.Object)["enabled"].(json.Boolean)), false)
+
+	// The source is untouched and independent from the destination.
+	source_claude := source["claude"].(json.Object)
+	testing.expect_value(t, len(source_claude["tools"].(json.Array)), 1)
+	_, source_has_model := source_claude["model"]
+	testing.expect_value(t, source_has_model, false)
+}
+
 @(test)
 discovers_sources_in_precedence_order :: proc(t: ^testing.T) {
 	fixture := make_fixture(t)
 	defer destroy_fixture(&fixture)
 
-	system_a := path(fixture.environment.config_directories[0], "kroken", "config.toml")
-	system_b := path(fixture.environment.config_directories[1], "kroken", "config.toml")
-	user := path(fixture.environment.config_home, "kroken", "config.toml")
-	drop_in_second := path(fixture.environment.config_home, "kroken", "config.d", "20-local.toml")
-	drop_in_first := path(fixture.environment.config_home, "kroken", "config.d", "10-shared.toml")
-	not_toml := path(fixture.environment.config_home, "kroken", "config.d", "notes.txt")
+	system_a := path(fixture.environment.config_directories[0], "kroken", "config.sjson")
+	system_b := path(fixture.environment.config_directories[1], "kroken", "config.sjson")
+	user := path(fixture.environment.config_home, "kroken", "config.sjson")
+	drop_in_second := path(fixture.environment.config_home, "kroken", "config.d", "20-local.sjson")
+	drop_in_first := path(fixture.environment.config_home, "kroken", "config.d", "10-shared.sjson")
+	not_sjson := path(fixture.environment.config_home, "kroken", "config.d", "notes.txt")
 	project_outer := path(fixture.root, "project", ".kroken")
 	project_inner := path(fixture.project, ".kroken")
 	defer {
@@ -84,7 +182,7 @@ discovers_sources_in_precedence_order :: proc(t: ^testing.T) {
 		delete(user)
 		delete(drop_in_second)
 		delete(drop_in_first)
-		delete(not_toml)
+		delete(not_sjson)
 		delete(project_outer)
 		delete(project_inner)
 	}
@@ -93,7 +191,7 @@ discovers_sources_in_precedence_order :: proc(t: ^testing.T) {
 	write_file(t, user, "profile = 'user'\n")
 	write_file(t, drop_in_second, "profile = 'second'\n")
 	write_file(t, drop_in_first, "profile = 'first'\n")
-	write_file(t, not_toml, "ignored\n")
+	write_file(t, not_sjson, "ignored\n")
 	write_file(t, project_outer, "profile = 'outer'\n")
 	write_file(t, project_inner, "profile = 'inner'\n")
 
@@ -120,8 +218,8 @@ resolves_layers_and_profile :: proc(t: ^testing.T) {
 	fixture := make_fixture(t)
 	defer destroy_fixture(&fixture)
 
-	user := path(fixture.environment.config_home, "kroken", "config.toml")
-	drop_in := path(fixture.environment.config_home, "kroken", "config.d", "50-work.toml")
+	user := path(fixture.environment.config_home, "kroken", "config.sjson")
+	drop_in := path(fixture.environment.config_home, "kroken", "config.d", "50-work.sjson")
 	project := path(fixture.project, ".kroken")
 	defer {
 		delete(user)
@@ -129,23 +227,31 @@ resolves_layers_and_profile :: proc(t: ^testing.T) {
 		delete(project)
 	}
 	write_file(t, user, `
-[claude]
-model = "opus"
-tools = ["Read", "Grep", "Glob"]
-[log]
-enabled = false
+claude = {
+    model = "opus"
+    tools = ["Read", "Grep", "Glob"]
+}
+log = { enabled = false }
 `)
 	write_file(t, drop_in, `
-[profiles.work]
-[profiles.work.claude]
-effort = "high"
-[profiles.work.claude.env]
-CLAUDE_CONFIG_DIR = "~/.claude-work"
+profiles = {
+    work = {
+        claude = {
+            effort = "high"
+            env = { CLAUDE_CONFIG_DIR = "~/.claude-work" }
+        }
+    }
+}
 `)
 	write_file(t, project, `
 profile = "work"
-[claude]
-tools = ["Read"]
+claude = { tools = ["Read"] }
+prompt = {
+    template = [
+        "File: {file}"
+        "{selection}"
+    ]
+}
 `)
 
 	resolved, message, ok := resolve(fixture.environment, fixture.project, "")
@@ -167,36 +273,35 @@ tools = ["Read"]
 	testing.expect_value(t, resolved.config.claude.env[0].value, "~/.claude-work")
 	testing.expect_value(t, resolved.config.log.enabled, false)
 	testing.expect_value(t, resolved.config.claude.command, "claude")
-	testing.expect_value(t, resolved.config.prompt.template, DEFAULT_TEMPLATE)
+	testing.expect_value(t, resolved.config.prompt.system, DEFAULT_SYSTEM_PROMPT)
+	testing.expect_value(t, resolved.config.prompt.template, "File: {file}\n{selection}\n")
 	testing.expect_value(t, len(resolved.sources), 3)
 }
 
 @(test)
 command_line_profile_beats_files :: proc(t: ^testing.T) {
-	root, _, _ := toml.parse(`
+	root := parse_or_fail(t, `
 profile = "a"
-[profiles.a.claude]
-model = "a-model"
-[profiles.b.claude]
-model = "b-model"
+profiles = {
+    a = { claude = { model = "a-model" } }
+    b = { claude = { model = "b-model" } }
+}
 `)
-	defer toml.destroy_table(root)
+	defer json.destroy_value(root)
 
-	name, message, ok := apply_profile(root, "b")
+	name, message, ok := apply_profile(&root, "b")
 	defer delete(message)
 	testing.expect(t, ok)
 	testing.expect_value(t, name, "b")
-	model, _ := toml.get_string(root, "claude.model")
-	testing.expect_value(t, model, "b-model")
-	selected, _ := toml.get_string(root, "profile")
-	testing.expect_value(t, selected, "b")
+	testing.expect_value(t, string(root["claude"].(json.Object)["model"].(json.String)), "b-model")
+	testing.expect_value(t, string(root["profile"].(json.String)), "b")
 }
 
 @(test)
 missing_profile_is_an_error :: proc(t: ^testing.T) {
-	root, _, _ := toml.parse("profile = \"ghost\"\n")
-	defer toml.destroy_table(root)
-	_, message, ok := apply_profile(root, "")
+	root := parse_or_fail(t, "profile = \"ghost\"\n")
+	defer json.destroy_value(root)
+	_, message, ok := apply_profile(&root, "")
 	defer delete(message)
 	testing.expect_value(t, ok, false)
 	testing.expect_value(t, message, "profile \"ghost\" is not defined in any configuration file")
@@ -205,20 +310,21 @@ missing_profile_is_an_error :: proc(t: ^testing.T) {
 @(test)
 rejects_unknown_keys_and_wrong_types :: proc(t: ^testing.T) {
 	cases := [][2]string {
-		{"[claude]\nmodle = \"opus\"\n", "unknown key claude.modle"},
-		{"[claude]\ntools = \"Read\"\n", "claude.tools must be an array of strings"},
-		{"[claude]\ntools = [1]\n", "claude.tools must be an array of strings"},
-		{"[claude.env]\nA = 1\n", "claude.env must be a table of strings"},
-		{"[log]\nenabled = \"yes\"\n", "log.enabled must be true or false"},
-		{"claude = 3\n", "claude must be a table"},
-		{"[claude]\ncommand = \"\"\n", "claude.command must not be empty"},
+		{"claude = { modle = \"opus\" }\n", "unknown key claude.modle"},
+		{"claude = { tools = \"Read\" }\n", "claude.tools must be an array of strings"},
+		{"claude = { tools = [1] }\n", "claude.tools must be an array of strings"},
+		{"claude = { env = { A = 1 } }\n", "claude.env must be an object of strings"},
+		{"log = { enabled = \"yes\" }\n", "log.enabled must be true or false"},
+		{"claude = 3\n", "claude must be an object"},
+		{"claude = { command = \"\" }\n", "claude.command must not be empty"},
+		{"prompt = { system = [1] }\n", "prompt.system must be a string or an array of strings"},
 		{"stray = true\n", "unknown key stray"},
 	}
 	for test_case in cases {
-		root, parse_error, parse_ok := toml.parse(test_case[0])
+		root, parse_error, parse_ok := parse_document(test_case[0])
 		testing.expectf(t, parse_ok, "fixture failed to parse: %s", parse_error.message)
-		defer toml.destroy_table(root)
-		_, message, ok := from_table(root)
+		defer json.destroy_value(root)
+		_, message, ok := from_object(root)
 		defer delete(message)
 		testing.expect_value(t, ok, false)
 		testing.expect_value(t, message, test_case[1])
@@ -227,9 +333,9 @@ rejects_unknown_keys_and_wrong_types :: proc(t: ^testing.T) {
 
 @(test)
 max_budget_accepts_integers :: proc(t: ^testing.T) {
-	root, _, _ := toml.parse("[claude]\nmax_budget_usd = 2\n")
-	defer toml.destroy_table(root)
-	config, message, ok := from_table(root)
+	root := parse_or_fail(t, "claude = { max_budget_usd = 2 }\n")
+	defer json.destroy_value(root)
+	config, message, ok := from_object(root)
 	defer delete(message)
 	testing.expect(t, ok)
 	defer destroy_config(&config)
@@ -237,21 +343,23 @@ max_budget_accepts_integers :: proc(t: ^testing.T) {
 }
 
 @(test)
-to_table_round_trips_defaults :: proc(t: ^testing.T) {
+dump_round_trips_defaults :: proc(t: ^testing.T) {
 	config := default_config()
 	defer destroy_config(&config)
-	tree := to_table(config)
-	defer toml.destroy_table(tree)
+	config.claude.max_budget_usd = 0.25
+	config.claude.env = make([]Env_Entry, 1)
+	config.claude.env[0] = Env_Entry{"CLAUDE_CONFIG_DIR", "~/.claude-work"}
 
-	written := toml.write(tree)
+	written, dump_ok := dump(config)
+	testing.expect(t, dump_ok)
 	defer delete(written)
-	reparsed, parse_error, parse_ok := toml.parse(written)
-	testing.expectf(t, parse_ok, "dump did not parse: %s", parse_error.message)
-	if !parse_ok {
-		return
-	}
-	defer toml.destroy_table(reparsed)
-	restored, message, ok := from_table(reparsed)
+	testing.expect(t, strings.contains(written, "max_budget_usd = 0.25\n"))
+	testing.expect(t, strings.contains(written, "CLAUDE_CONFIG_DIR = \"~/.claude-work\""))
+	testing.expect(t, strings.contains(written, "\"You are kroken, a code completion engine driven from a text editor.\"\n"))
+
+	reparsed := parse_or_fail(t, written)
+	defer json.destroy_value(reparsed)
+	restored, message, ok := from_object(reparsed)
 	defer delete(message)
 	testing.expectf(t, ok, "dump did not convert: %s", message)
 	if !ok {
@@ -260,9 +368,12 @@ to_table_round_trips_defaults :: proc(t: ^testing.T) {
 	defer destroy_config(&restored)
 	testing.expect_value(t, restored.claude.command, "claude")
 	testing.expect_value(t, len(restored.claude.tools), 3)
+	testing.expect_value(t, restored.claude.max_budget_usd, 0.25)
 	testing.expect_value(t, restored.prompt.system, DEFAULT_SYSTEM_PROMPT)
+	testing.expect_value(t, restored.prompt.template, DEFAULT_TEMPLATE)
 	testing.expect_value(t, restored.log.enabled, true)
-	testing.expect(t, strings.contains(written, "tools = [\"Read\", \"Grep\", \"Glob\"]"))
+	testing.expect_value(t, len(restored.claude.env), 1)
+	testing.expect_value(t, restored.claude.env[0].value, "~/.claude-work")
 }
 
 @(test)

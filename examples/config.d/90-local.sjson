@@ -1,0 +1,21 @@
+// ~/.config/kroken/config.d/90-local.sjson
+//
+// Machine-local: keep this file out of version control. Sorted after
+// 10-shared.sjson, so it wins on any key both files set.
+
+profiles = {
+    // A second claude.ai login. Create it once with:
+    //   CLAUDE_CONFIG_DIR=~/.claude-work claude
+    work = {
+        claude = {
+            env = { CLAUDE_CONFIG_DIR = "~/.claude-work" }
+        }
+    }
+
+    // Direct API access instead of a subscription.
+    api = {
+        claude = {
+            env = { ANTHROPIC_API_KEY = "sk-ant-..." }
+        }
+    }
+}

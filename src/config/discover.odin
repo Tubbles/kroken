@@ -6,11 +6,15 @@ package config
 // filesystem root down to the start directory. See DESIGN.md.
 
 import "base:runtime"
+import "core:encoding/json"
 import "core:fmt"
 import "core:os"
 import "core:slice"
 import "core:strings"
-import "kroken:toml"
+
+CONFIG_FILE_NAME :: "config.sjson"
+DROP_IN_EXTENSION :: ".sjson"
+PROJECT_FILE_NAME :: ".kroken"
 
 Environment :: struct {
 	home:               string,
@@ -34,7 +38,7 @@ Source :: struct {
 Resolved :: struct {
 	config:  Config,
 	sources: []Source, // in precedence order, lowest first
-	tree:    ^toml.Table, // the merged tree the config borrows its strings from
+	tree:    json.Object, // the merged tree the config borrows its strings from
 	profile: string,
 }
 
@@ -57,18 +61,18 @@ resolve :: proc(environment: Environment, start_directory: string, override_prof
 	resolved.sources = discover(environment, start_directory, allocator)
 	tree, load_error, load_ok := load_sources(resolved.sources, allocator)
 	if !load_ok {
-		message = toml.format_error(load_error.toml_error, load_error.path, allocator)
+		message = format_load_error(load_error, allocator)
 		destroy_sources(resolved.sources, allocator)
 		return {}, message, false
 	}
 	resolved.tree = tree
-	profile, profile_message, profile_ok := apply_profile(tree, override_profile, allocator)
+	profile, profile_message, profile_ok := apply_profile(&resolved.tree, override_profile, allocator)
 	if !profile_ok {
 		destroy_resolved(&resolved, allocator)
 		return {}, profile_message, false
 	}
 	resolved.profile = profile
-	config, config_message, config_ok := from_table(tree, allocator)
+	config, config_message, config_ok := from_object(resolved.tree, allocator)
 	if !config_ok {
 		destroy_resolved(&resolved, allocator)
 		return {}, config_message, false
@@ -80,7 +84,7 @@ resolve :: proc(environment: Environment, start_directory: string, override_prof
 destroy_resolved :: proc(resolved: ^Resolved, allocator := context.allocator) {
 	destroy_config(&resolved.config, allocator)
 	destroy_sources(resolved.sources, allocator)
-	toml.destroy_table(resolved.tree, allocator)
+	json.destroy_value(resolved.tree, allocator)
 	resolved^ = {}
 }
 
@@ -97,13 +101,13 @@ discover :: proc(environment: Environment, start_directory: string, allocator :=
 	// The first XDG_CONFIG_DIRS entry has the highest precedence, so it
 	// is applied last.
 	#reverse for directory in environment.config_directories {
-		add_if_file(&sources, join(allocator, directory, "kroken", "config.toml"), .System, allocator)
+		add_if_file(&sources, join(allocator, directory, "kroken", CONFIG_FILE_NAME), .System, allocator)
 	}
-	add_if_file(&sources, join(allocator, environment.config_home, "kroken", "config.toml"), .User, allocator)
+	add_if_file(&sources, join(allocator, environment.config_home, "kroken", CONFIG_FILE_NAME), .User, allocator)
 
 	drop_in_directory := join(allocator, environment.config_home, "kroken", "config.d")
 	defer delete(drop_in_directory, allocator)
-	names := sorted_toml_names(drop_in_directory, allocator)
+	names := sorted_drop_in_names(drop_in_directory, allocator)
 	defer delete_strings(names, allocator)
 	for name in names {
 		add_if_file(&sources, join(allocator, drop_in_directory, name), .User_Drop_In, allocator)
@@ -112,7 +116,7 @@ discover :: proc(environment: Environment, start_directory: string, allocator :=
 	ancestors := ancestor_directories(start_directory, allocator)
 	defer delete(ancestors, allocator)
 	#reverse for directory in ancestors {
-		add_if_file(&sources, join(allocator, directory, ".kroken"), .Project, allocator)
+		add_if_file(&sources, join(allocator, directory, PROJECT_FILE_NAME), .Project, allocator)
 	}
 	return sources[:]
 }
@@ -141,7 +145,7 @@ delete_strings :: proc(items: []string, allocator := context.allocator) {
 }
 
 @(private)
-sorted_toml_names :: proc(directory: string, allocator := context.allocator) -> []string {
+sorted_drop_in_names :: proc(directory: string, allocator := context.allocator) -> []string {
 	infos, error := os.read_all_directory_by_path(directory, allocator)
 	if error != nil {
 		return nil
@@ -149,7 +153,7 @@ sorted_toml_names :: proc(directory: string, allocator := context.allocator) -> 
 	defer os.file_info_slice_delete(infos, allocator)
 	names := make([dynamic]string, allocator)
 	for info in infos {
-		if info.type != .Directory && strings.has_suffix(info.name, ".toml") {
+		if info.type != .Directory && strings.has_suffix(info.name, DROP_IN_EXTENSION) {
 			append(&names, strings.clone(info.name, allocator))
 		}
 	}
@@ -212,23 +216,29 @@ expand_home :: proc(path: string, home: string, allocator := context.allocator) 
 }
 
 Load_Error :: struct {
-	path:       string,
-	toml_error: toml.Error,
+	path:        string,
+	parse_error: Parse_Error,
+}
+
+format_load_error :: proc(error: Load_Error, allocator := context.allocator) -> string {
+	if error.parse_error.line > 0 {
+		return fmt.aprintf("%s:%d:%d: %s", error.path, error.parse_error.line, error.parse_error.column, error.parse_error.message, allocator = allocator)
+	}
+	return fmt.aprintf("%s: %s", error.path, error.parse_error.message, allocator = allocator)
 }
 
 // Parses every source and merges them in order into one tree.
-load_sources :: proc(sources: []Source, allocator := context.allocator) -> (root: ^toml.Table, error: Load_Error, ok: bool) {
-	root = toml.new_table(allocator)
+load_sources :: proc(sources: []Source, allocator := context.allocator) -> (root: json.Object, error: Load_Error, ok: bool) {
+	root = json.Object(make(map[string]json.Value, allocator))
 	for source in sources {
 		content, read_error := os.read_entire_file_from_path(source.path, allocator)
 		if read_error != nil {
-			toml.destroy_table(root, allocator)
-			return nil, Load_Error{path = source.path, toml_error = {message = "cannot read file"}}, false
+			json.destroy_value(root, allocator)
+			return nil, Load_Error{path = source.path, parse_error = {message = "cannot read file"}}, false
 		}
 		defer delete(content, allocator)
-		merge_ok := merge_document(root, string(content), source.path, &error, allocator)
-		if !merge_ok {
-			toml.destroy_table(root, allocator)
+		if !merge_document(&root, string(content), source.path, &error, allocator) {
+			json.destroy_value(root, allocator)
 			return nil, error, false
 		}
 	}
@@ -237,50 +247,47 @@ load_sources :: proc(sources: []Source, allocator := context.allocator) -> (root
 
 // Parses one document and merges it into `root`, for tests and callers
 // that hold the content already.
-merge_document :: proc(root: ^toml.Table, content: string, path: string, error: ^Load_Error, allocator := context.allocator) -> bool {
-	tree, parse_error, parse_ok := toml.parse(content, allocator)
+merge_document :: proc(root: ^json.Object, content: string, path: string, error: ^Load_Error, allocator := context.allocator) -> bool {
+	tree, parse_error, parse_ok := parse_document(content, allocator)
 	if !parse_ok {
-		error^ = Load_Error{path = path, toml_error = parse_error}
+		error^ = Load_Error{path = path, parse_error = parse_error}
 		return false
 	}
-	defer toml.destroy_table(tree, allocator)
-	toml.merge(root, tree, allocator)
+	defer json.destroy_value(tree, allocator)
+	merge(root, tree, allocator)
 	return true
 }
 
-// Applies `[profiles.<name>]` on top of the root, where name is the
+// Applies `profiles.<name>` on top of the root, where name is the
 // override when given, else the merged `profile` key. Returns the name
 // in effect, borrowed from the tree.
-apply_profile :: proc(root: ^toml.Table, override: string, allocator := context.allocator) -> (name: string, message: string, ok: bool) {
+apply_profile :: proc(root: ^json.Object, override: string, allocator := context.allocator) -> (name: string, message: string, ok: bool) {
 	if override != "" {
-		toml.table_set(root, "profile", strings.clone(override, allocator), allocator)
+		set_value(root, "profile", json.String(strings.clone(override, allocator)), allocator)
 	}
-	if value, present := toml.table_get(root, "profile"); present {
-		text, is_string := value.(string)
+	if value, present := root["profile"]; present {
+		text, is_string := value.(json.String)
 		if !is_string {
 			return "", strings.clone("profile must be a string", allocator), false
 		}
-		name = text
+		name = string(text)
 	}
 	if name == "" {
 		return "", "", true
 	}
-	profiles, has_profiles := toml.get_table(root, "profiles")
-	profile: ^toml.Table
-	if has_profiles {
-		if value, present := toml.table_get(profiles, name); present {
-			profile, _ = value.(^toml.Table)
-		}
+	profile: json.Object
+	if profiles, has_profiles := root["profiles"].(json.Object); has_profiles {
+		profile, _ = profiles[name].(json.Object)
 	}
 	if profile == nil {
 		return "", fmt.aprintf("profile %q is not defined in any configuration file", name, allocator = allocator), false
 	}
-	overlay := toml.clone_table(profile, allocator)
-	defer toml.destroy_table(overlay, allocator)
+	overlay := clone_value(profile, allocator).(json.Object)
+	defer json.destroy_value(overlay, allocator)
 	// The overlay must not change which profile is selected, and the
 	// name returned above points into the root's current string.
-	toml.table_remove(overlay, "profile", allocator)
-	toml.table_remove(overlay, "profiles", allocator)
-	toml.merge(root, overlay, allocator)
+	remove_key(&overlay, "profile", allocator)
+	remove_key(&overlay, "profiles", allocator)
+	merge(root, overlay, allocator)
 	return name, "", true
 }

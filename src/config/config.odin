@@ -1,20 +1,26 @@
 package config
 
-// The typed configuration, its defaults, and the conversion to and from
-// the TOML tree. Discovery and layering live in discover.odin. The
-// schema is documented in doc/configuration.md; keep both in sync.
+// The typed configuration, its defaults, the conversion from the parsed
+// tree, and the dump for `kroken config`. Discovery and layering live
+// in discover.odin, tree operations in sjson.odin. The schema is
+// documented in doc/configuration.md; keep both in sync.
 
 import "base:runtime"
+import "core:encoding/json"
 import "core:fmt"
+import "core:io"
 import "core:slice"
+import "core:strconv"
 import "core:strings"
-import "kroken:toml"
 
 Config :: struct {
 	profile: string,
 	claude:  Claude_Config,
 	prompt:  Prompt_Config,
 	log:     Log_Config,
+	// Strings this config allocated itself (multi-line prompt text
+	// joined from an array); everything else borrows from the tree.
+	allocated_text: [dynamic]string,
 }
 
 Claude_Config :: struct {
@@ -23,7 +29,7 @@ Claude_Config :: struct {
 	effort:          string, // "" leaves the choice to claude
 	tools:           []string,
 	extra_args:      []string,
-	env:             []Env_Entry,
+	env:             []Env_Entry, // sorted by name
 	persist_session: bool,
 	max_budget_usd:  f64, // 0 means no cap
 	add_git_root:    bool,
@@ -71,7 +77,7 @@ Replace the selection according to the intent it expresses.
 
 // The slices are allocated so `destroy_config` can free them uniformly;
 // the strings are literals or borrowed from the tree the config was
-// built from and are never freed by this package.
+// built from, except those listed in `allocated_text`.
 default_config :: proc(allocator := context.allocator) -> Config {
 	return Config {
 		claude = Claude_Config {
@@ -83,6 +89,7 @@ default_config :: proc(allocator := context.allocator) -> Config {
 		},
 		prompt = Prompt_Config{system = DEFAULT_SYSTEM_PROMPT, template = DEFAULT_TEMPLATE},
 		log = Log_Config{enabled = true},
+		allocated_text = make([dynamic]string, allocator),
 	}
 }
 
@@ -90,6 +97,10 @@ destroy_config :: proc(config: ^Config, allocator := context.allocator) {
 	delete(config.claude.tools, allocator)
 	delete(config.claude.extra_args, allocator)
 	delete(config.claude.env, allocator)
+	for text in config.allocated_text {
+		delete(text, allocator)
+	}
+	delete(config.allocated_text)
 	config^ = {}
 }
 
@@ -97,10 +108,10 @@ destroy_config :: proc(config: ^Config, allocator := context.allocator) {
 // defaults. Unknown keys and wrong types are errors so typos surface
 // instead of being silently ignored. Strings in the result borrow from
 // `root`, which must outlive the config.
-from_table :: proc(root: ^toml.Table, allocator := context.allocator) -> (config: Config, message: string, ok: bool) {
+from_object :: proc(root: json.Object, allocator := context.allocator) -> (config: Config, message: string, ok: bool) {
 	config = default_config(allocator)
-	reader := Reader{allocator = allocator}
-	fill_from_table(&reader, &config, root)
+	reader := Reader{allocator = allocator, config = &config}
+	fill_from_object(&reader, root)
 	if reader.failed {
 		destroy_config(&config, allocator)
 		return {}, reader.message, false
@@ -113,6 +124,7 @@ from_table :: proc(root: ^toml.Table, allocator := context.allocator) -> (config
 @(private)
 Reader :: struct {
 	allocator: runtime.Allocator,
+	config:    ^Config,
 	message:   string,
 	failed:    bool,
 }
@@ -133,11 +145,12 @@ fail_type :: proc(reader: ^Reader, prefix: string, key: string, expectation: str
 }
 
 @(private)
-fill_from_table :: proc(reader: ^Reader, config: ^Config, root: ^toml.Table) {
+fill_from_object :: proc(reader: ^Reader, root: json.Object) {
+	config := reader.config
 	check_known_keys(reader, root, "", {"profile", "claude", "prompt", "log", "profiles"})
 	read_string(reader, root, "", "profile", &config.profile)
 
-	if claude := table_section(reader, root, "claude"); claude != nil {
+	if claude, found := section(reader, root, "claude"); found {
 		check_known_keys(reader, claude, "claude.", {"command", "model", "effort", "tools", "extra_args", "env", "persist_session", "max_budget_usd", "add_git_root"})
 		read_string(reader, claude, "claude.", "command", &config.claude.command)
 		read_string(reader, claude, "claude.", "model", &config.claude.model)
@@ -149,12 +162,12 @@ fill_from_table :: proc(reader: ^Reader, config: ^Config, root: ^toml.Table) {
 		read_f64(reader, claude, "claude.", "max_budget_usd", &config.claude.max_budget_usd)
 		read_bool(reader, claude, "claude.", "add_git_root", &config.claude.add_git_root)
 	}
-	if prompt := table_section(reader, root, "prompt"); prompt != nil {
+	if prompt, found := section(reader, root, "prompt"); found {
 		check_known_keys(reader, prompt, "prompt.", {"system", "template"})
-		read_string(reader, prompt, "prompt.", "system", &config.prompt.system)
-		read_string(reader, prompt, "prompt.", "template", &config.prompt.template)
+		read_text(reader, prompt, "prompt.", "system", &config.prompt.system)
+		read_text(reader, prompt, "prompt.", "template", &config.prompt.template)
 	}
-	if log := table_section(reader, root, "log"); log != nil {
+	if log, found := section(reader, root, "log"); found {
 		check_known_keys(reader, log, "log.", {"enabled", "directory"})
 		read_bool(reader, log, "log.", "enabled", &config.log.enabled)
 		read_string(reader, log, "log.", "directory", &config.log.directory)
@@ -165,8 +178,10 @@ fill_from_table :: proc(reader: ^Reader, config: ^Config, root: ^toml.Table) {
 }
 
 @(private)
-check_known_keys :: proc(reader: ^Reader, table: ^toml.Table, prefix: string, known: []string) {
-	for key in table.keys {
+check_known_keys :: proc(reader: ^Reader, object: json.Object, prefix: string, known: []string) {
+	keys := sorted_keys(object, reader.allocator)
+	defer delete(keys, reader.allocator)
+	for key in keys {
 		if !slice.contains(known, key) {
 			fail(reader, fmt.aprintf("unknown key %s%s", prefix, key, allocator = reader.allocator))
 			return
@@ -174,59 +189,93 @@ check_known_keys :: proc(reader: ^Reader, table: ^toml.Table, prefix: string, kn
 	}
 }
 
-// nil when the section is absent or not a table (the latter fails).
+// found=false when the section is absent; a present non-object fails.
 @(private)
-table_section :: proc(reader: ^Reader, root: ^toml.Table, key: string) -> ^toml.Table {
-	value, present := toml.table_get(root, key)
+section :: proc(reader: ^Reader, root: json.Object, key: string) -> (object: json.Object, found: bool) {
+	value, present := root[key]
 	if !present {
-		return nil
+		return nil, false
 	}
-	table, is_table := value.(^toml.Table)
-	if !is_table {
-		fail_type(reader, "", key, "a table")
-		return nil
+	table, is_object := value.(json.Object)
+	if !is_object {
+		fail_type(reader, "", key, "an object")
+		return nil, false
 	}
-	return table
+	return table, true
 }
 
 @(private)
-read_string :: proc(reader: ^Reader, table: ^toml.Table, prefix: string, key: string, destination: ^string) {
-	value, present := toml.table_get(table, key)
+read_string :: proc(reader: ^Reader, object: json.Object, prefix: string, key: string, destination: ^string) {
+	value, present := object[key]
 	if !present {
 		return
 	}
-	text, is_string := value.(string)
+	text, is_string := value.(json.String)
 	if !is_string {
 		fail_type(reader, prefix, key, "a string")
 		return
 	}
-	destination^ = text
+	destination^ = string(text)
 }
 
+// A string, or an array of strings joined with newlines and ending in
+// one, which is how multi-line prompt text is written in SJSON.
 @(private)
-read_bool :: proc(reader: ^Reader, table: ^toml.Table, prefix: string, key: string, destination: ^bool) {
-	value, present := toml.table_get(table, key)
+read_text :: proc(reader: ^Reader, object: json.Object, prefix: string, key: string, destination: ^string) {
+	value, present := object[key]
 	if !present {
 		return
 	}
-	flag, is_bool := value.(bool)
+	if text, is_string := value.(json.String); is_string {
+		destination^ = string(text)
+		return
+	}
+	lines, is_array := value.(json.Array)
+	if !is_array {
+		fail_type(reader, prefix, key, "a string or an array of strings")
+		return
+	}
+	builder := strings.builder_make(reader.allocator)
+	for line in lines {
+		text, is_string := line.(json.String)
+		if !is_string {
+			strings.builder_destroy(&builder)
+			fail_type(reader, prefix, key, "a string or an array of strings")
+			return
+		}
+		strings.write_string(&builder, string(text))
+		strings.write_byte(&builder, '\n')
+	}
+	joined := strings.clone(strings.to_string(builder), reader.allocator)
+	strings.builder_destroy(&builder)
+	append(&reader.config.allocated_text, joined)
+	destination^ = joined
+}
+
+@(private)
+read_bool :: proc(reader: ^Reader, object: json.Object, prefix: string, key: string, destination: ^bool) {
+	value, present := object[key]
+	if !present {
+		return
+	}
+	flag, is_bool := value.(json.Boolean)
 	if !is_bool {
 		fail_type(reader, prefix, key, "true or false")
 		return
 	}
-	destination^ = flag
+	destination^ = bool(flag)
 }
 
 @(private)
-read_f64 :: proc(reader: ^Reader, table: ^toml.Table, prefix: string, key: string, destination: ^f64) {
-	value, present := toml.table_get(table, key)
+read_f64 :: proc(reader: ^Reader, object: json.Object, prefix: string, key: string, destination: ^f64) {
+	value, present := object[key]
 	if !present {
 		return
 	}
 	#partial switch number in value {
-	case f64:
-		destination^ = number
-	case i64:
+	case json.Float:
+		destination^ = f64(number)
+	case json.Integer:
 		destination^ = f64(number)
 	case:
 		fail_type(reader, prefix, key, "a number")
@@ -234,98 +283,166 @@ read_f64 :: proc(reader: ^Reader, table: ^toml.Table, prefix: string, key: strin
 }
 
 @(private)
-read_string_list :: proc(reader: ^Reader, table: ^toml.Table, prefix: string, key: string, destination: ^[]string) {
-	value, present := toml.table_get(table, key)
+read_string_list :: proc(reader: ^Reader, object: json.Object, prefix: string, key: string, destination: ^[]string) {
+	value, present := object[key]
 	if !present {
 		return
 	}
-	array, is_array := value.(^toml.Array)
+	array, is_array := value.(json.Array)
 	if !is_array {
 		fail_type(reader, prefix, key, "an array of strings")
 		return
 	}
-	items := make([]string, len(array.items), reader.allocator)
-	for item, index in array.items {
-		text, is_string := item.(string)
+	items := make([]string, len(array), reader.allocator)
+	for item, index in array {
+		text, is_string := item.(json.String)
 		if !is_string {
 			delete(items, reader.allocator)
 			fail_type(reader, prefix, key, "an array of strings")
 			return
 		}
-		items[index] = text
+		items[index] = string(text)
 	}
 	delete(destination^, reader.allocator)
 	destination^ = items
 }
 
 @(private)
-read_env :: proc(reader: ^Reader, table: ^toml.Table, prefix: string, key: string, destination: ^[]Env_Entry) {
-	value, present := toml.table_get(table, key)
+read_env :: proc(reader: ^Reader, object: json.Object, prefix: string, key: string, destination: ^[]Env_Entry) {
+	value, present := object[key]
 	if !present {
 		return
 	}
-	env_table, is_table := value.(^toml.Table)
-	if !is_table {
-		fail_type(reader, prefix, key, "a table of strings")
+	env_object, is_object := value.(json.Object)
+	if !is_object {
+		fail_type(reader, prefix, key, "an object of strings")
 		return
 	}
-	entries := make([]Env_Entry, len(env_table.keys), reader.allocator)
-	for name, index in env_table.keys {
-		text, is_string := env_table.values[index].(string)
+	names := sorted_keys(env_object, reader.allocator)
+	defer delete(names, reader.allocator)
+	entries := make([]Env_Entry, len(names), reader.allocator)
+	for name, index in names {
+		text, is_string := env_object[name].(json.String)
 		if !is_string {
 			delete(entries, reader.allocator)
-			fail_type(reader, prefix, key, "a table of strings")
+			fail_type(reader, prefix, key, "an object of strings")
 			return
 		}
-		entries[index] = Env_Entry{name = name, value = text}
+		entries[index] = Env_Entry{name = name, value = string(text)}
 	}
 	delete(destination^, reader.allocator)
 	destination^ = entries
 }
 
-// Builds a tree holding every effective value, defaults included, for
-// `kroken config`.
-to_table :: proc(config: Config, allocator := context.allocator) -> ^toml.Table {
-	root := toml.new_table(allocator)
-	toml.table_set(root, "profile", strings.clone(config.profile, allocator), allocator)
-
-	claude := toml.new_table(allocator)
-	claude.explicit = true
-	toml.table_set(claude, "command", strings.clone(config.claude.command, allocator), allocator)
-	toml.table_set(claude, "model", strings.clone(config.claude.model, allocator), allocator)
-	toml.table_set(claude, "effort", strings.clone(config.claude.effort, allocator), allocator)
-	toml.table_set(claude, "tools", string_array(config.claude.tools, allocator), allocator)
-	toml.table_set(claude, "extra_args", string_array(config.claude.extra_args, allocator), allocator)
-	toml.table_set(claude, "persist_session", config.claude.persist_session, allocator)
-	toml.table_set(claude, "max_budget_usd", config.claude.max_budget_usd, allocator)
-	toml.table_set(claude, "add_git_root", config.claude.add_git_root, allocator)
-	env := toml.new_table(allocator)
-	env.explicit = true
-	for entry in config.claude.env {
-		toml.table_set(env, entry.name, strings.clone(entry.value, allocator), allocator)
-	}
-	toml.table_set(claude, "env", env, allocator)
-	toml.table_set(root, "claude", claude, allocator)
-
-	prompt := toml.new_table(allocator)
-	prompt.explicit = true
-	toml.table_set(prompt, "system", strings.clone(config.prompt.system, allocator), allocator)
-	toml.table_set(prompt, "template", strings.clone(config.prompt.template, allocator), allocator)
-	toml.table_set(root, "prompt", prompt, allocator)
-
-	log := toml.new_table(allocator)
-	log.explicit = true
-	toml.table_set(log, "enabled", config.log.enabled, allocator)
-	toml.table_set(log, "directory", strings.clone(config.log.directory, allocator), allocator)
-	toml.table_set(root, "log", log, allocator)
-	return root
+// Mirrors Config in the shape the files use, for json.marshal: env as
+// an object, multi-line prompt text as arrays of lines.
+@(private)
+Dump :: struct {
+	profile: string,
+	claude:  Dump_Claude,
+	prompt:  Dump_Prompt,
+	log:     Log_Config,
 }
 
 @(private)
-string_array :: proc(items: []string, allocator := context.allocator) -> ^toml.Array {
-	array := toml.new_array(allocator)
-	for item in items {
-		append(&array.items, strings.clone(item, allocator))
+Dump_Claude :: struct {
+	command:         string,
+	model:           string,
+	effort:          string,
+	tools:           []string,
+	extra_args:      []string,
+	env:             map[string]string,
+	persist_session: bool,
+	max_budget_usd:  f64,
+	add_git_root:    bool,
+}
+
+@(private)
+Dump_Prompt :: struct {
+	system:   []string,
+	template: []string,
+}
+
+// Renders every effective value, defaults included, as SJSON that
+// parses back to the same configuration.
+dump :: proc(config: Config, allocator := context.allocator) -> (text: string, ok: bool) {
+	ensure_float_marshaler()
+	env := make(map[string]string, allocator)
+	defer delete(env)
+	for entry in config.claude.env {
+		env[entry.name] = entry.value
 	}
-	return array
+	system_lines := text_lines(config.prompt.system, allocator)
+	defer delete(system_lines, allocator)
+	template_lines := text_lines(config.prompt.template, allocator)
+	defer delete(template_lines, allocator)
+
+	value := Dump {
+		profile = config.profile,
+		claude = Dump_Claude {
+			command = config.claude.command,
+			model = config.claude.model,
+			effort = config.claude.effort,
+			tools = config.claude.tools,
+			extra_args = config.claude.extra_args,
+			env = env,
+			persist_session = config.claude.persist_session,
+			max_budget_usd = config.claude.max_budget_usd,
+			add_git_root = config.claude.add_git_root,
+		},
+		prompt = Dump_Prompt{system = system_lines, template = template_lines},
+		log = config.log,
+	}
+	options := json.Marshal_Options {
+		spec                      = .MJSON,
+		pretty                    = true,
+		use_spaces                = true,
+		spaces                    = 4,
+		mjson_keys_use_equal_sign = true,
+		sort_maps_by_key          = true,
+	}
+	data, error := json.marshal(value, options, allocator)
+	if error != nil {
+		return "", false
+	}
+	return string(data), true
+}
+
+// Splits text into lines the array form reproduces: a trailing newline
+// is implied by the array form, so it does not become an empty line.
+@(private)
+text_lines :: proc(text: string, allocator := context.allocator) -> []string {
+	lines, _ := strings.split(text, "\n", allocator)
+	if len(lines) > 0 && lines[len(lines) - 1] == "" {
+		return lines[:len(lines) - 1]
+	}
+	return lines
+}
+
+// json.marshal writes floats with sixteen decimals; the shortest
+// round-trip form reads better and parses back the same.
+@(private)
+user_marshalers: map[typeid]json.User_Marshaler
+
+// The registry is process-wide state, so it lives on the plain heap
+// rather than in whatever allocator the caller (or a test) is using.
+@(private)
+ensure_float_marshaler :: proc() {
+	if json._user_marshalers == nil {
+		user_marshalers = make(map[typeid]json.User_Marshaler, runtime.heap_allocator())
+		json.set_user_marshalers(&user_marshalers)
+	}
+	_ = json.register_user_marshaler(f64, write_short_float)
+}
+
+@(private)
+write_short_float :: proc(writer: io.Writer, value: any, options: ^json.Marshal_Options) -> json.Marshal_Error {
+	number := (^f64)(value.data)^
+	buffer: [64]byte
+	text := strconv.write_float(buffer[:], number, 'g', -1, 64)
+	if len(text) > 0 && text[0] == '+' {
+		text = text[1:]
+	}
+	io.write_string(writer, text) or_return
+	return nil
 }

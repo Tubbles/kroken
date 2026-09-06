@@ -57,15 +57,24 @@ A micro plugin ships with the [Tubbles/micro](https://github.com/Tubbles/micro) 
 
 ## Configuration
 
-TOML files, layered from general to specific. Later layers override earlier ones key by key:
+SJSON files ([Bitsquid simplified JSON](https://bitsquid.blogspot.com/2009/10/simplified-json-notation.html): comments, `key = value`, no commas needed, no root braces), layered from general to specific. Later layers override earlier ones key by key:
 
-1. `$XDG_CONFIG_DIRS/kroken/config.toml` (default `/etc/xdg`)
-2. `$XDG_CONFIG_HOME/kroken/config.toml` (default `~/.config`)
-3. `$XDG_CONFIG_HOME/kroken/config.d/*.toml`, sorted by file name
+1. `$XDG_CONFIG_DIRS/kroken/config.sjson` (default `/etc/xdg`)
+2. `$XDG_CONFIG_HOME/kroken/config.sjson` (default `~/.config`)
+3. `$XDG_CONFIG_HOME/kroken/config.d/*.sjson`, sorted by file name
 4. `.kroken` files found in the target file's directory and all of its parents, applied from the filesystem root downwards, so the closest file wins
 5. Command line flags
 
-Split settings across `config.d/` files to keep some of them in version control and machine-local ones (API keys, alternate `CLAUDE_CONFIG_DIR`) out of it.
+Split settings across `config.d/` files to keep some of them in version control and machine-local ones (API keys, alternate `CLAUDE_CONFIG_DIR`) out of it. A minimal `~/.config/kroken/config.sjson`:
+
+```
+claude = {
+    model = "opus"
+    effort = "high"
+}
+```
+
+See [examples/](examples/) for the full set and [doc/configuration.md](doc/configuration.md) for every key.
 
 ## License
 
