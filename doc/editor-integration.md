@@ -11,7 +11,7 @@ kroken complete --file <path> [--start LINE[:COLUMN]] [--end LINE[:COLUMN]] [--s
 ```
 
 - The selection is read from `--selection-file` when given, otherwise from stdin until end of file when stdin is not a terminal, otherwise lines `--start` through `--end` are taken from `--file` itself. Prefer the file when your editor cannot close the child's stdin; micro's job API, for example, can write to stdin but never closes it. The last fallback exists for shell use and for editors that have already saved the buffer.
-- `--file` is the path of the buffer the selection came from. Its directory becomes the working directory of `claude`, which is what makes every `CLAUDE.md` above the file load. `--start` and `--end` are optional and only inform the prompt. Positions are 1-based and the end is inclusive.
+- `--file` is the path of the buffer the selection came from. Its directory becomes the working directory of `claude`, which is what makes every `CLAUDE.md` above the file load. `--start` and `--end` are optional; they inform the prompt and, when nothing is piped in, pick the lines to read from the file. Positions are 1-based and the end is inclusive.
 - On success the replacement text is printed to stdout with nothing added, not even a trailing newline. Paste it over the selection verbatim.
 - stderr carries human-readable status: a final `kroken: done in 4.2 s, 3 turns, $0.0421` line, the log directory, and any error. Show it in the status bar or ignore it.
 - Exit codes: `0` success, `1` claude ran and reported an error (stderr says why), `2` bad arguments or configuration, `3` claude could not be started or returned something unparseable. Anything but `0` means stdout holds no replacement.
