@@ -77,6 +77,7 @@ resolve :: proc(environment: Environment, start_directory: string, override_prof
 		destroy_resolved(&resolved, allocator)
 		return {}, config_message, false
 	}
+	expand_env_homes(&config, environment.home, allocator)
 	resolved.config = config
 	return resolved, "", true
 }

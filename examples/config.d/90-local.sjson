@@ -18,4 +18,13 @@ profiles = {
             env = { ANTHROPIC_API_KEY = "sk-ant-..." }
         }
     }
+
+    // A second ChatGPT login for Codex. Create it once with:
+    //   CODEX_HOME=~/.codex-work codex login
+    "openai-work" = {
+        backend = "codex"
+        codex = {
+            env = { CODEX_HOME = "~/.codex-work" }
+        }
+    }
 }

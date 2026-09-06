@@ -9,4 +9,14 @@ profiles = {
             effort = "low"
         }
     }
+
+    // Same workflow on OpenAI's side. Select with `profile = "openai"` in a
+    // .kroken file or `kroken complete --profile openai`.
+    openai = {
+        backend = "codex"
+        codex = {
+            model = "gpt-5.5"
+            effort = "high"
+        }
+    }
 }

@@ -2,14 +2,14 @@
 
 kroken (Swedish for "the hook") is an LLM harness for coding, driven from a text editor. Select a region of a source file, hand it to kroken, keep editing, and the region is replaced with what the model wrote. It is code completion on steroids: select a comment that says what a function should do together with an empty skeleton, and the body gets filled in.
 
-kroken is a thin, one-shot command line tool written in [Odin](https://odin-lang.org/). It runs `claude -p` (Claude Code headless mode) under the hood, so it works with any Anthropic subscription or provider that `claude` itself supports.
+kroken is a thin, one-shot command line tool written in [Odin](https://odin-lang.org/). It drives an agent CLI in headless mode under the hood: Claude Code (`claude -p`) or OpenAI Codex (`codex exec`), selectable per project or per run. Any login or provider those tools support works, since kroken never authenticates itself.
 
 Status: early. Linux amd64 only for now.
 
 ## How it works
 
 1. The editor sends the selected text (on stdin or via `--selection-file`) together with the path of the file it came from.
-2. kroken assembles a prompt from a configurable template, resolves layered configuration, and runs `claude -p` with the file's directory as working directory. Claude Code loads every `CLAUDE.md` above that directory, plus `~/.claude/CLAUDE.md`, exactly as an interactive session would.
+2. kroken assembles a prompt from a configurable template, resolves layered configuration, and runs the configured backend with the file's directory as working directory. The backend loads its own instruction files above that directory exactly as an interactive session would: `CLAUDE.md` for Claude Code, `AGENTS.md` for Codex.
 3. The replacement text comes back on stdout. The editor pastes it over the original selection.
 
 Each invocation is an independent process, so any number of them can run in parallel while you keep editing.
@@ -68,8 +68,13 @@ SJSON files ([Bitsquid simplified JSON](https://bitsquid.blogspot.com/2009/10/si
 Split settings across `config.d/` files to keep some of them in version control and machine-local ones (API keys, alternate `CLAUDE_CONFIG_DIR`) out of it. A minimal `~/.config/kroken/config.sjson`:
 
 ```
+backend = "claude"          // or "codex"
 claude = {
     model = "opus"
+    effort = "high"
+}
+codex = {
+    model = "gpt-5.5"
     effort = "high"
 }
 ```

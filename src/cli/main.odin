@@ -10,28 +10,38 @@ import "core:os"
 import "core:strconv"
 import "core:strings"
 import "core:time"
-import "kroken:claude"
+import "kroken:backend"
+import "kroken:backend/claude"
+import "kroken:backend/codex"
 import "kroken:config"
 import "kroken:prompt"
 
 VERSION :: "0.2.0"
 
 Exit_Code :: enum int {
-	Success      = 0,
-	Claude_Error = 1, // claude ran and reported an error
-	Usage        = 2, // bad arguments or configuration
-	Runner       = 3, // claude could not be started or its output not parsed
+	Success       = 0,
+	Backend_Error = 1, // the backend ran and reported an error
+	Usage         = 2, // bad arguments or configuration
+	Runner        = 3, // the backend could not be started or its output not parsed
 }
 
 USAGE :: `usage: kroken <command> [flags]
 
 commands:
-  complete   read a selection, run claude, print the replacement
+  complete   read a selection, run the configured backend, print the replacement
   config     print the effective configuration and its sources
   version    print the version
 
 run "kroken <command> --help" for the flags of a command
 `
+
+// Every backend kroken can drive. Order is only cosmetic.
+backends :: proc() -> []backend.Backend {
+	list := make([]backend.Backend, 2)
+	list[0] = claude.definition()
+	list[1] = codex.definition()
+	return list
+}
 
 Complete_Options :: struct {
 	file:           string `args:"name=file,required" usage:"path of the file the selection comes from"`,
@@ -39,8 +49,9 @@ Complete_Options :: struct {
 	end:            string `args:"name=end" usage:"selection end as LINE[:COLUMN], 1-based, inclusive; defaults to --start"`,
 	selection_file: string `args:"name=selection-file" usage:"read the selection from this file instead of stdin"`,
 	profile:        string `args:"name=profile" usage:"configuration profile to apply, overrides the profile key"`,
-	model:          string `args:"name=model" usage:"model passed to claude, overrides claude.model"`,
-	dry_run:        bool `args:"name=dry-run" usage:"print the command line and prompt instead of running claude"`,
+	backend:        string `args:"name=backend" usage:"backend to run, overrides the backend key"`,
+	model:          string `args:"name=model" usage:"model passed to the backend, overrides its model key"`,
+	dry_run:        bool `args:"name=dry-run" usage:"print the command line and prompt instead of running the backend"`,
 }
 
 Config_Options :: struct {
@@ -88,7 +99,8 @@ parse_options :: proc(options: ^$T, arguments: []string, command_name: string, d
 
 run_complete :: proc(arguments: []string) -> Exit_Code {
 	options: Complete_Options
-	if !parse_options(&options, arguments, "kroken complete", COMPLETE_DESCRIPTION) {
+	available := backends()
+	if !parse_options(&options, arguments, "kroken complete", complete_description(available)) {
 		return .Usage
 	}
 	file, path_error := os.get_absolute_path(options.file, context.allocator)
@@ -122,8 +134,16 @@ run_complete :: proc(arguments: []string) -> Exit_Code {
 		fmt.eprintf("kroken: %s\n", resolve_message)
 		return .Usage
 	}
+	if options.backend != "" {
+		resolved.config.backend = options.backend
+	}
+	chosen, backend_found := backend.find(available, resolved.config.backend)
+	if !backend_found {
+		fmt.eprintf("kroken: unknown backend %q, known backends: %s\n", resolved.config.backend, backend.names(available))
+		return .Usage
+	}
 	if options.model != "" {
-		resolved.config.claude.model = options.model
+		chosen.set_model(&resolved.config, options.model)
 	}
 
 	git_root, has_git_root := config.find_git_root(directory)
@@ -136,35 +156,45 @@ run_complete :: proc(arguments: []string) -> Exit_Code {
 	}
 	user_prompt := prompt.render(resolved.config.prompt.template, selection)
 
-	invocation := claude.build_invocation(resolved.config.claude, resolved.config.prompt.system, directory, git_root)
-	invocation.env_overrides = expand_env(resolved.config.claude.env, environment.home)
+	// A dry run never leaves a log directory behind.
+	run_directory, is_temporary, directory_ok := create_run_directory(resolved.config.log, environment, options.dry_run)
+	if !directory_ok {
+		return .Runner
+	}
+	defer if is_temporary {
+		_ = os.remove_all(run_directory)
+	}
 
+	invocation, build_message, build_ok := chosen.build(&resolved.config, resolved.config.prompt.system, user_prompt, directory, git_root, run_directory, context.allocator)
+	if !build_ok {
+		fmt.eprintf("kroken: %s\n", build_message)
+		return .Runner
+	}
 	if options.dry_run {
-		print_dry_run(invocation, user_prompt)
+		print_dry_run(chosen, invocation)
 		return .Success
 	}
 
-	log_directory := create_log_directory(resolved.config.log, environment)
 	started := time.now()
-	outcome, run_message, run_ok := claude.run(invocation, user_prompt, log_directory)
+	outcome, run_message, run_ok := backend.execute(chosen, invocation, run_directory)
 	if !run_ok {
 		fmt.eprintf("kroken: %s\n", run_message)
-		print_log_hint(log_directory)
+		print_log_hint(run_directory, is_temporary)
 		return .Runner
 	}
 	if outcome.result.is_error {
-		fmt.eprintf("kroken: claude failed (%s): %s\n", outcome.result.subtype, strings.trim_space(outcome.result.text))
-		print_log_hint(log_directory)
-		return .Claude_Error
+		fmt.eprintf("kroken: %s failed: %s\n", chosen.name, outcome.result.error_text)
+		print_log_hint(run_directory, is_temporary)
+		return .Backend_Error
 	}
 	if outcome.result.has_replacement {
 		fmt.print(outcome.result.replacement)
 	} else {
-		fmt.eprintln("kroken: claude returned no structured output, printing its raw result")
+		fmt.eprintf("kroken: %s returned no structured output, printing its final message\n", chosen.name)
 		fmt.print(outcome.result.text)
 	}
-	fmt.eprintf("kroken: done in %.1f s, %d turns, $%.4f\n", time.duration_seconds(time.since(started)), outcome.result.num_turns, outcome.result.total_cost_usd)
-	print_log_hint(log_directory)
+	fmt.eprintf("kroken: done in %.1f s via %s, %s\n", time.duration_seconds(time.since(started)), chosen.name, outcome.result.summary)
+	print_log_hint(run_directory, is_temporary)
 	return .Success
 }
 
@@ -214,11 +244,18 @@ run_config :: proc(arguments: []string) -> Exit_Code {
 	return .Success
 }
 
-COMPLETE_DESCRIPTION :: `Reads a selection, runs claude -p with the file's directory as its working
-directory (so every CLAUDE.md above the file applies), and prints the
-replacement on stdout. Status goes to stderr.
-
-`
+complete_description :: proc(available: []backend.Backend) -> string {
+	builder := strings.builder_make()
+	fmt.sbprint(&builder, "Reads a selection, runs the configured backend with the file's directory as\n")
+	fmt.sbprint(&builder, "its working directory (so the backend's own instruction files above the file\n")
+	fmt.sbprint(&builder, "apply: CLAUDE.md, AGENTS.md), and prints the replacement on stdout. Status goes\n")
+	fmt.sbprint(&builder, "to stderr. Backends:\n")
+	for candidate in available {
+		fmt.sbprintf(&builder, "  %-8s %s\n", candidate.name, candidate.description)
+	}
+	fmt.sbprint(&builder, "\n")
+	return strings.to_string(builder)
+}
 
 // Built at runtime so the paths shown are the ones this machine uses.
 config_description :: proc() -> string {
@@ -308,19 +345,17 @@ relative_to :: proc(file: string, base: string) -> string {
 	return os.base(file)
 }
 
-expand_env :: proc(entries: []config.Env_Entry, home: string) -> []config.Env_Entry {
-	expanded := make([]config.Env_Entry, len(entries))
-	for entry, index in entries {
-		expanded[index] = config.Env_Entry{name = entry.name, value = config.expand_home(entry.value, home)}
-	}
-	return expanded
-}
-
-// <root>/<UTC timestamp>-<pid>, or "" when logging is off or the
-// directory cannot be created (reported, not fatal).
-create_log_directory :: proc(log_config: config.Log_Config, environment: config.Environment) -> string {
-	if !log_config.enabled {
-		return ""
+// Every run gets a directory for its prompt, support files, and output:
+// <log root>/<UTC timestamp>-<pid> when logging is on, else a temporary
+// one the caller removes.
+create_run_directory :: proc(log_config: config.Log_Config, environment: config.Environment, force_temporary: bool) -> (directory: string, is_temporary: bool, ok: bool) {
+	if !log_config.enabled || force_temporary {
+		temporary, error := os.make_directory_temp("", "kroken-run-*", context.allocator)
+		if error != nil {
+			fmt.eprintf("kroken: cannot create a temporary directory: %v\n", error)
+			return "", false, false
+		}
+		return temporary, true, true
 	}
 	root: string
 	if log_config.directory != "" {
@@ -330,21 +365,22 @@ create_log_directory :: proc(log_config: config.Log_Config, environment: config.
 	}
 	now, _ := time.time_to_datetime(time.now())
 	name := fmt.aprintf("%04d%02d%02d-%02d%02d%02d-%d", now.year, now.month, now.day, now.hour, now.minute, now.second, os.get_pid())
-	directory, _ := os.join_path({root, name}, context.allocator)
+	directory, _ = os.join_path({root, name}, context.allocator)
 	if error := os.make_directory_all(directory); error != nil && error != os.General_Error.Exist {
 		fmt.eprintf("kroken: cannot create log directory %s: %v\n", directory, error)
-		return ""
+		return "", false, false
 	}
-	return directory
+	return directory, false, true
 }
 
-print_log_hint :: proc(log_directory: string) {
-	if log_directory != "" {
-		fmt.eprintf("kroken: log: %s\n", log_directory)
+print_log_hint :: proc(run_directory: string, is_temporary: bool) {
+	if !is_temporary {
+		fmt.eprintf("kroken: log: %s\n", run_directory)
 	}
 }
 
-print_dry_run :: proc(invocation: claude.Invocation, user_prompt: string) {
+print_dry_run :: proc(chosen: backend.Backend, invocation: backend.Invocation) {
+	fmt.println("backend:", chosen.name)
 	fmt.println("working directory:", invocation.working_directory)
 	fmt.println("environment overrides:")
 	for entry in invocation.env_overrides {
@@ -354,6 +390,6 @@ print_dry_run :: proc(invocation: claude.Invocation, user_prompt: string) {
 	for argument in invocation.command {
 		fmt.printf("  %q\n", argument)
 	}
-	fmt.println("prompt:")
-	fmt.print(user_prompt)
+	fmt.println("stdin:")
+	fmt.print(invocation.stdin)
 }

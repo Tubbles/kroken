@@ -3,6 +3,8 @@
 // Every key is optional. Run `kroken config` to see the effective values,
 // including the default prompts. See doc/configuration.md for the schema.
 
+// backend = "claude"                 // or "codex"; --backend overrides per run
+
 claude = {
     // command = "claude"
     // model = "opus"
@@ -10,6 +12,13 @@ claude = {
     tools = ["Read", "Grep", "Glob"]   // read-only; [] turns tools off entirely
     // extra_args = ["--permission-prompts", "none"]
     // max_budget_usd = 0.5
+}
+
+codex = {
+    // command = "codex"
+    // model = "gpt-5.5"
+    // effort = "high"                 // minimal, low, medium, high, xhigh
+    sandbox = "read-only"              // workspace-write lets it edit files, which kroken never needs
 }
 
 log = {

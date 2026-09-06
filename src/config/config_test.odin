@@ -270,7 +270,12 @@ prompt = {
 	testing.expect_value(t, resolved.config.claude.tools[0], "Read")
 	testing.expect_value(t, len(resolved.config.claude.env), 1)
 	testing.expect_value(t, resolved.config.claude.env[0].name, "CLAUDE_CONFIG_DIR")
-	testing.expect_value(t, resolved.config.claude.env[0].value, "~/.claude-work")
+	expected_home := path(fixture.environment.home, ".claude-work")
+	defer delete(expected_home)
+	testing.expect_value(t, resolved.config.claude.env[0].value, expected_home)
+	testing.expect_value(t, resolved.config.backend, "claude")
+	testing.expect_value(t, resolved.config.codex.command, "codex")
+	testing.expect_value(t, resolved.config.codex.sandbox, "read-only")
 	testing.expect_value(t, resolved.config.log.enabled, false)
 	testing.expect_value(t, resolved.config.claude.command, "claude")
 	testing.expect_value(t, resolved.config.prompt.system, DEFAULT_SYSTEM_PROMPT)
@@ -317,6 +322,9 @@ rejects_unknown_keys_and_wrong_types :: proc(t: ^testing.T) {
 		{"log = { enabled = \"yes\" }\n", "log.enabled must be true or false"},
 		{"claude = 3\n", "claude must be an object"},
 		{"claude = { command = \"\" }\n", "claude.command must not be empty"},
+		{"backend = \"\"\n", "backend must not be empty"},
+		{"codex = { sandbox = 1 }\n", "codex.sandbox must be a string"},
+		{"codex = { command = \"\" }\n", "codex.command must not be empty"},
 		{"prompt = { system = [1] }\n", "prompt.system must be a string or an array of strings"},
 		{"stray = true\n", "unknown key stray"},
 	}
@@ -329,6 +337,39 @@ rejects_unknown_keys_and_wrong_types :: proc(t: ^testing.T) {
 		testing.expect_value(t, ok, false)
 		testing.expect_value(t, message, test_case[1])
 	}
+}
+
+@(test)
+reads_the_codex_section_and_backend_key :: proc(t: ^testing.T) {
+	root := parse_or_fail(t, `
+backend = "codex"
+codex = {
+    model = "gpt-5.5"
+    effort = "high"
+    sandbox = "workspace-write"
+    persist_session = true
+    skip_git_repo_check = false
+    env = { CODEX_HOME = "~/.codex-work" }
+}
+`)
+	defer json.destroy_value(root)
+	config, message, ok := from_object(root)
+	defer delete(message)
+	testing.expectf(t, ok, "from_object failed: %s", message)
+	if !ok {
+		return
+	}
+	defer destroy_config(&config)
+	testing.expect_value(t, config.backend, "codex")
+	testing.expect_value(t, config.codex.model, "gpt-5.5")
+	testing.expect_value(t, config.codex.effort, "high")
+	testing.expect_value(t, config.codex.sandbox, "workspace-write")
+	testing.expect_value(t, config.codex.persist_session, true)
+	testing.expect_value(t, config.codex.skip_git_repo_check, false)
+	testing.expect_value(t, config.codex.env[0].name, "CODEX_HOME")
+
+	expand_env_homes(&config, "/home/me")
+	testing.expect_value(t, config.codex.env[0].value, "/home/me/.codex-work")
 }
 
 @(test)
@@ -354,6 +395,8 @@ dump_round_trips_defaults :: proc(t: ^testing.T) {
 	testing.expect(t, dump_ok)
 	defer delete(written)
 	testing.expect(t, strings.contains(written, "max_budget_usd = 0.25\n"))
+	testing.expect(t, strings.contains(written, "backend = \"claude\"\n"))
+	testing.expect(t, strings.contains(written, "skip_git_repo_check = true\n"))
 	testing.expect(t, strings.contains(written, "CLAUDE_CONFIG_DIR = \"~/.claude-work\""))
 	testing.expect(t, strings.contains(written, "\"You are kroken, a code completion engine driven from a text editor.\"\n"))
 

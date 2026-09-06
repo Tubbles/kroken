@@ -4,16 +4,23 @@ kroken is a one-shot command line process. The editor spawns it in the backgroun
 
 ## Run flow (`kroken complete`)
 
-1. Parse flags: `--file` (required), `--start LINE[:COLUMN]`, `--end LINE[:COLUMN]`, `--selection-file`, `--profile`, `--model`, `--dry-run`.
+1. Parse flags: `--file` (required), `--start LINE[:COLUMN]`, `--end LINE[:COLUMN]`, `--selection-file`, `--profile`, `--backend`, `--model`, `--dry-run`.
 2. Read the selection: `--selection-file` if given, else stdin when it is not a terminal, else lines `--start` through `--end` of the target file. With none of those, fail with a usage message rather than block on a terminal.
-3. Resolve configuration (see below) starting from the directory of `--file`.
+3. Resolve configuration (see below) starting from the directory of `--file`, then pick the backend named by the `backend` key or `--backend` from the list the CLI holds.
 4. Render the prompt template with the placeholders documented in `doc/configuration.md`.
-5. Assemble the `claude -p` command line: `--output-format json`, `--json-schema` requesting `{"replacement": string}`, `--append-system-prompt` with the configured system prompt, `--tools`, `--model`, `--effort`, `--add-dir <git root>`, `--no-session-persistence`, `--max-budget-usd`, then `extra_args` verbatim.
-6. Run it with the target file's directory as working directory, so Claude Code loads `~/.claude/CLAUDE.md` and every `CLAUDE.md` or `CLAUDE.local.md` above the file. The prompt is written to a file and given to the child as stdin, which avoids argument length limits and keeps the selection out of process listings. The child's environment is the current one with the profile's `[claude.env]` entries applied on top.
-7. Parse the JSON result. On success print `structured_output.replacement` to stdout without a trailing newline added. On `is_error` print the `result` text to stderr and exit 1.
-8. If logging is enabled, the prompt, command line, stderr and result JSON are kept under `$XDG_STATE_HOME/kroken/log/<timestamp>-<pid>/`.
+5. Create the run directory: `$XDG_STATE_HOME/kroken/log/<timestamp>-<pid>/` when logging is on, a temporary directory otherwise (and always for a dry run). It holds the prompt, any support files a backend needs (Codex reads its output schema from a file), and afterwards the command line, stderr, and raw stdout.
+6. Ask the backend to build the invocation: the command line, the environment overrides, and the text the child reads on stdin. Claude Code gets the system prompt through `--append-system-prompt`; Codex has no such flag in exec mode, so its backend prepends the system prompt to the stdin text. Both get the target file's directory as working directory, so their own instruction files above the file apply (`CLAUDE.md`, `AGENTS.md`). The prompt travels on stdin from a file, which avoids argument length limits and keeps the selection out of process listings. The child's environment is the current one with the backend section's `env` entries applied on top.
+7. Run it, then hand stdout and the exit code back to the backend to parse into a Result: an error flag and text, the final message, the structured replacement if the backend produced one, a session id, and a one-line summary for the status line.
+8. On success print the replacement to stdout without a trailing newline added. On a backend-reported error print it to stderr and exit 1.
 
-Exit codes: 0 success, 1 claude reported an error, 2 usage or configuration error, 3 the `claude` process could not be started or produced unparseable output.
+Exit codes: 0 success, 1 the backend reported an error, 2 usage or configuration error, 3 the backend process could not be started or produced unparseable output.
+
+## Backends
+
+A backend is a value of `backend.Backend`: a name, a description for help text, and three procedures. `build` turns the configuration and the two prompts into an invocation, `parse` turns the process output into a Result, `set_model` applies `--model` to the backend's own configuration section. The generic package `backend` owns process execution, the run directory files, and the environment merge, and knows nothing about any concrete backend; the CLI holds the list. Adding a backend means one package under `src/backend/`, one configuration section, and one entry in that list.
+
+- `claude`: Claude Code, `claude -p --output-format json --json-schema ...`. The replacement arrives as a JSON string in `structured_output`. Read-only tools by default, `--add-dir <git root>` so they reach the whole repository, `--no-session-persistence` unless asked otherwise.
+- `codex`: OpenAI Codex CLI, `codex exec --json --output-schema <file> -`. The JSON Lines stream is parsed for the last `agent_message` item, whose text is the schema-shaped JSON, plus `turn.completed` usage and `turn.failed` or `error` events. Read-only sandbox by default, `--ephemeral` unless asked otherwise, `--skip-git-repo-check` so files outside a repository work.
 
 ## Configuration
 
@@ -33,10 +40,11 @@ Profiles are how "any kind of subscription" is supported: a profile is just env 
 
 ## Packages
 
-- `config`: file discovery, layering, deep merge of `json.Object` trees, profile overlay, conversion of the merged tree into a typed `Config` struct with defaults, and the dump for `kroken config` (a `json.marshal` of a mirror struct in MJSON mode, with a user marshaler so floats print short).
+- `config`: file discovery, layering, deep merge of `json.Object` trees, profile overlay, conversion of the merged tree into a typed `Config` struct with defaults (one section per backend), and the dump for `kroken config` (a `json.marshal` of a mirror struct in MJSON mode, with a user marshaler so floats print short).
 - `prompt`: template rendering and file extension to language mapping.
-- `claude`: command line assembly (pure, tested), process execution (side effects), result parsing (pure, tested).
-- `cli`: the `main` package.
+- `backend`: the backend interface, process execution with the run directory (side effects), the environment merge (pure, tested).
+- `backend/claude`, `backend/codex`: command line assembly and output parsing for one backend each, pure and tested against recorded output.
+- `cli`: the `main` package, which also holds the backend list.
 
 ## Non-goals for now
 

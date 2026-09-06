@@ -15,7 +15,7 @@ LLM coding harness driven from a text editor, written in Odin. Wraps `claude -p`
 - `src/cli/` is the `main` package and owns argument parsing, exit codes, and wiring only.
 - `src/config/` discovers, layers, and merges SJSON configuration files (`sjson.odin` wraps `core:encoding/json` in SJSON mode), applies profiles, and produces the typed config and its dump.
 - `src/prompt/` renders the prompt template and detects the language from the file name.
-- `src/claude/` assembles the `claude -p` command line, runs it, and parses its JSON result.
+- `src/backend/` is the backend interface plus process execution; `src/backend/claude/` and `src/backend/codex/` each assemble one command line and parse one output format. Nothing outside a backend's own package may assume that backend; the CLI only holds the list.
 - Packages are imported through the `kroken` collection: `import "kroken:config"`.
 - Configuration files are SJSON (Bitsquid simplified JSON); never reintroduce a hand-written parser, the core library's SJSON mode is the parser.
 - `doc/` holds the living documentation, `doc/log/` write-once decision logs by date, `doc/work/` work items.

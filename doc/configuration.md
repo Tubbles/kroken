@@ -44,17 +44,29 @@ An empty file, or one holding only comments, is valid and changes nothing.
 
 Objects merge recursively. Any other value, arrays included, replaces the value from the layer below wholesale. A `tools = ["Read"]` in a `.kroken` file therefore replaces the whole list, it does not append.
 
+## Backends
+
+`backend` names which agent CLI runs the completion. kroken never authenticates; each backend uses whatever login its CLI has, and the profile mechanism below switches between logins with environment variables.
+
+| Backend | Runs | Instruction files it loads | Login |
+|---------|------|----------------------------|-------|
+| `claude` | Claude Code, `claude -p` | `~/.claude/CLAUDE.md`, then `CLAUDE.md` and `CLAUDE.local.md` from the filesystem root down to the file's directory | `claude auth login` (claude.ai subscription), `ANTHROPIC_API_KEY`, or the Bedrock, Vertex, and Foundry variables Claude Code documents. A second login lives in another `CLAUDE_CONFIG_DIR`. |
+| `codex` | OpenAI Codex CLI, `codex exec` | `~/.codex/AGENTS.md`, then `AGENTS.md` (or `AGENTS.override.md`) from the project root down to the file's directory | `codex login` (ChatGPT subscription) or `OPENAI_API_KEY`. A second login lives in another `CODEX_HOME`. |
+
+`--backend` on the command line overrides the key for one run, and `--model` applies to whichever backend runs.
+
 ## Profiles
 
 A profile is a named member of the `profiles` object holding any of the keys below. After all layers are merged, the `profile` key names the profile to apply, and that member is merged on top of everything one more time. `--profile` on the command line beats the key. Naming a profile that no file defines is an error.
 
 Because `profile` is an ordinary key, a `.kroken` in a work repository can select `profile = "work"` while the profile's contents (an alternate `CLAUDE_CONFIG_DIR`, an API key) stay in a machine-local file under `config.d/`.
 
-Profiles are how different subscriptions and providers are used. kroken never authenticates; it only sets environment variables and flags for the `claude` process:
+Profiles are how different subscriptions, providers, and backends are used. A profile only sets keys, environment variables, and flags for the backend process:
 
 - A second claude.ai login: run `CLAUDE_CONFIG_DIR=~/.claude-work claude` once to log in, then put `CLAUDE_CONFIG_DIR = "~/.claude-work"` in the profile's `claude.env`.
-- An API key: `ANTHROPIC_API_KEY` in `claude.env`.
+- An API key: `ANTHROPIC_API_KEY` in `claude.env`, `OPENAI_API_KEY` in `codex.env`.
 - Bedrock, Vertex, Foundry: the environment variables Claude Code documents for them, in `claude.env`.
+- A different backend: `backend = "codex"` in the profile, optionally with its own `codex` section.
 
 ## Keys
 
@@ -62,6 +74,7 @@ Values shown are the defaults.
 
 ```
 profile = ""                        // name of the profiles member to apply
+backend = "claude"                  // claude or codex
 
 claude = {
     command = "claude"              // executable, resolved through PATH
@@ -73,6 +86,17 @@ claude = {
     max_budget_usd = 0              // --max-budget-usd when greater than zero
     add_git_root = true             // pass --add-dir <git root> so read-only tools can reach the whole repository
     env = {}                        // environment variables set for the claude process; "~/" is expanded
+}
+
+codex = {
+    command = "codex"               // executable, resolved through PATH
+    model = ""                      // --model; empty leaves the choice to codex
+    effort = ""                     // -c model_reasoning_effort (minimal, low, medium, high, xhigh); empty leaves it to codex
+    sandbox = "read-only"           // --sandbox: read-only, workspace-write, or danger-full-access
+    extra_args = []                 // appended to the command line verbatim, before the trailing "-"
+    persist_session = false         // false passes --ephemeral so no session rollout is written
+    skip_git_repo_check = true      // pass --skip-git-repo-check so files outside a repository work
+    env = {}                        // environment variables set for the codex process; "~/" is expanded
 }
 
 prompt = {

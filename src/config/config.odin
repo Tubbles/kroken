@@ -15,7 +15,9 @@ import "core:strings"
 
 Config :: struct {
 	profile: string,
+	backend: string, // which backend runs the completion; the CLI owns the list
 	claude:  Claude_Config,
+	codex:   Codex_Config,
 	prompt:  Prompt_Config,
 	log:     Log_Config,
 	// Strings this config allocated itself (multi-line prompt text
@@ -35,6 +37,17 @@ Claude_Config :: struct {
 	add_git_root:    bool,
 }
 
+Codex_Config :: struct {
+	command:             string,
+	model:               string, // "" leaves the choice to codex
+	effort:              string, // "" leaves the choice to codex
+	sandbox:             string, // read-only, workspace-write, danger-full-access
+	extra_args:          []string,
+	env:                 []Env_Entry, // sorted by name
+	persist_session:     bool,
+	skip_git_repo_check: bool,
+}
+
 Env_Entry :: struct {
 	name:  string,
 	value: string,
@@ -50,8 +63,11 @@ Log_Config :: struct {
 	directory: string, // "" means $XDG_STATE_HOME/kroken/log
 }
 
+DEFAULT_BACKEND :: "claude"
 DEFAULT_COMMAND :: "claude"
 DEFAULT_TOOLS :: []string{"Read", "Grep", "Glob"}
+DEFAULT_CODEX_COMMAND :: "codex"
+DEFAULT_CODEX_SANDBOX :: "read-only"
 
 DEFAULT_SYSTEM_PROMPT :: `You are kroken, a code completion engine driven from a text editor.
 
@@ -80,12 +96,20 @@ Replace the selection according to the intent it expresses.
 // built from, except those listed in `allocated_text`.
 default_config :: proc(allocator := context.allocator) -> Config {
 	return Config {
+		backend = DEFAULT_BACKEND,
 		claude = Claude_Config {
 			command = DEFAULT_COMMAND,
 			tools = slice.clone(DEFAULT_TOOLS, allocator),
 			extra_args = make([]string, 0, allocator),
 			env = make([]Env_Entry, 0, allocator),
 			add_git_root = true,
+		},
+		codex = Codex_Config {
+			command = DEFAULT_CODEX_COMMAND,
+			sandbox = DEFAULT_CODEX_SANDBOX,
+			extra_args = make([]string, 0, allocator),
+			env = make([]Env_Entry, 0, allocator),
+			skip_git_repo_check = true,
 		},
 		prompt = Prompt_Config{system = DEFAULT_SYSTEM_PROMPT, template = DEFAULT_TEMPLATE},
 		log = Log_Config{enabled = true},
@@ -97,6 +121,8 @@ destroy_config :: proc(config: ^Config, allocator := context.allocator) {
 	delete(config.claude.tools, allocator)
 	delete(config.claude.extra_args, allocator)
 	delete(config.claude.env, allocator)
+	delete(config.codex.extra_args, allocator)
+	delete(config.codex.env, allocator)
 	for text in config.allocated_text {
 		delete(text, allocator)
 	}
@@ -147,8 +173,9 @@ fail_type :: proc(reader: ^Reader, prefix: string, key: string, expectation: str
 @(private)
 fill_from_object :: proc(reader: ^Reader, root: json.Object) {
 	config := reader.config
-	check_known_keys(reader, root, "", {"profile", "claude", "prompt", "log", "profiles"})
+	check_known_keys(reader, root, "", {"profile", "backend", "claude", "codex", "prompt", "log", "profiles"})
 	read_string(reader, root, "", "profile", &config.profile)
+	read_string(reader, root, "", "backend", &config.backend)
 
 	if claude, found := section(reader, root, "claude"); found {
 		check_known_keys(reader, claude, "claude.", {"command", "model", "effort", "tools", "extra_args", "env", "persist_session", "max_budget_usd", "add_git_root"})
@@ -162,6 +189,17 @@ fill_from_object :: proc(reader: ^Reader, root: json.Object) {
 		read_f64(reader, claude, "claude.", "max_budget_usd", &config.claude.max_budget_usd)
 		read_bool(reader, claude, "claude.", "add_git_root", &config.claude.add_git_root)
 	}
+	if codex, found := section(reader, root, "codex"); found {
+		check_known_keys(reader, codex, "codex.", {"command", "model", "effort", "sandbox", "extra_args", "env", "persist_session", "skip_git_repo_check"})
+		read_string(reader, codex, "codex.", "command", &config.codex.command)
+		read_string(reader, codex, "codex.", "model", &config.codex.model)
+		read_string(reader, codex, "codex.", "effort", &config.codex.effort)
+		read_string(reader, codex, "codex.", "sandbox", &config.codex.sandbox)
+		read_string_list(reader, codex, "codex.", "extra_args", &config.codex.extra_args)
+		read_env(reader, codex, "codex.", "env", &config.codex.env)
+		read_bool(reader, codex, "codex.", "persist_session", &config.codex.persist_session)
+		read_bool(reader, codex, "codex.", "skip_git_repo_check", &config.codex.skip_git_repo_check)
+	}
 	if prompt, found := section(reader, root, "prompt"); found {
 		check_known_keys(reader, prompt, "prompt.", {"system", "template"})
 		read_text(reader, prompt, "prompt.", "system", &config.prompt.system)
@@ -172,8 +210,34 @@ fill_from_object :: proc(reader: ^Reader, root: json.Object) {
 		read_bool(reader, log, "log.", "enabled", &config.log.enabled)
 		read_string(reader, log, "log.", "directory", &config.log.directory)
 	}
-	if !reader.failed && config.claude.command == "" {
+	if reader.failed {
+		return
+	}
+	if config.backend == "" {
+		fail(reader, strings.clone("backend must not be empty", reader.allocator))
+	} else if config.claude.command == "" {
 		fail(reader, strings.clone("claude.command must not be empty", reader.allocator))
+	} else if config.codex.command == "" {
+		fail(reader, strings.clone("codex.command must not be empty", reader.allocator))
+	}
+}
+
+// Replaces "~/" in the environment values of every backend, since the
+// child processes will not. The expansions are owned by the config.
+expand_env_homes :: proc(config: ^Config, home: string, allocator := context.allocator) {
+	expand_entries(config, config.claude.env, home, allocator)
+	expand_entries(config, config.codex.env, home, allocator)
+}
+
+@(private)
+expand_entries :: proc(config: ^Config, entries: []Env_Entry, home: string, allocator := context.allocator) {
+	for &entry in entries {
+		if !strings.has_prefix(entry.value, "~") {
+			continue
+		}
+		expanded := expand_home(entry.value, home, allocator)
+		append(&config.allocated_text, expanded)
+		entry.value = expanded
 	}
 }
 
@@ -339,9 +403,23 @@ read_env :: proc(reader: ^Reader, object: json.Object, prefix: string, key: stri
 @(private)
 Dump :: struct {
 	profile: string,
+	backend: string,
 	claude:  Dump_Claude,
+	codex:   Dump_Codex,
 	prompt:  Dump_Prompt,
 	log:     Log_Config,
+}
+
+@(private)
+Dump_Codex :: struct {
+	command:             string,
+	model:               string,
+	effort:              string,
+	sandbox:             string,
+	extra_args:          []string,
+	env:                 map[string]string,
+	persist_session:     bool,
+	skip_git_repo_check: bool,
 }
 
 @(private)
@@ -367,11 +445,10 @@ Dump_Prompt :: struct {
 // parses back to the same configuration.
 dump :: proc(config: Config, allocator := context.allocator) -> (text: string, ok: bool) {
 	ensure_float_marshaler()
-	env := make(map[string]string, allocator)
+	env := env_map(config.claude.env, allocator)
 	defer delete(env)
-	for entry in config.claude.env {
-		env[entry.name] = entry.value
-	}
+	codex_env := env_map(config.codex.env, allocator)
+	defer delete(codex_env)
 	system_lines := text_lines(config.prompt.system, allocator)
 	defer delete(system_lines, allocator)
 	template_lines := text_lines(config.prompt.template, allocator)
@@ -379,6 +456,17 @@ dump :: proc(config: Config, allocator := context.allocator) -> (text: string, o
 
 	value := Dump {
 		profile = config.profile,
+		backend = config.backend,
+		codex = Dump_Codex {
+			command = config.codex.command,
+			model = config.codex.model,
+			effort = config.codex.effort,
+			sandbox = config.codex.sandbox,
+			extra_args = config.codex.extra_args,
+			env = codex_env,
+			persist_session = config.codex.persist_session,
+			skip_git_repo_check = config.codex.skip_git_repo_check,
+		},
 		claude = Dump_Claude {
 			command = config.claude.command,
 			model = config.claude.model,
@@ -406,6 +494,15 @@ dump :: proc(config: Config, allocator := context.allocator) -> (text: string, o
 		return "", false
 	}
 	return string(data), true
+}
+
+@(private)
+env_map :: proc(entries: []Env_Entry, allocator := context.allocator) -> map[string]string {
+	result := make(map[string]string, allocator)
+	for entry in entries {
+		result[entry.name] = entry.value
+	}
+	return result
 }
 
 // Splits text into lines the array form reproduces: a trailing newline
