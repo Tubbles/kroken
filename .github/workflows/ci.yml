@@ -14,6 +14,11 @@ jobs:
         run: scripts/setup-toolchain.sh
       - name: Test and build
         run: scripts/check.sh
+      - name: Build the man page
+        run: |
+          go install github.com/cpuguy83/go-md2man/v2@v2.0.7
+          scripts/build-man.sh
+          test -f build/kroken.1
       - name: Upload binary
         uses: actions/upload-artifact@v7
         with:

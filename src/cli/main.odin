@@ -30,10 +30,26 @@ USAGE :: `usage: kroken <command> [flags]
 commands:
   complete   read a selection, run the configured backend, print the replacement
   config     print the effective configuration and its sources
+  help       print the documentation: kroken help [topic]
   version    print the version
 
 run "kroken <command> --help" for the flags of a command
 `
+
+// The documentation ships inside the binary, so `kroken help` matches
+// the build exactly and works where only the release binary exists.
+// The same files feed the man page; see scripts/build-man.sh.
+Help_Topic :: struct {
+	name:    string,
+	summary: string,
+	text:    string,
+}
+
+HELP_TOPICS :: []Help_Topic {
+	{"overview", "what kroken is, installing, usage", #load("../../README.md", string)},
+	{"config", "configuration files, keys, backends, profiles, prompt placeholders", #load("../../doc/configuration.md", string)},
+	{"editor", "the protocol between an editor and kroken", #load("../../doc/editor-integration.md", string)},
+}
 
 // Every backend kroken can drive. Order is only cosmetic.
 backends :: proc() -> []backend.Backend {
@@ -72,8 +88,11 @@ main :: proc() {
 		code = run_config(os.args[2:])
 	case "version":
 		fmt.println("kroken", VERSION)
-	case "-h", "--help", "help":
+	case "help":
+		code = run_help(os.args[2:])
+	case "-h", "--help":
 		fmt.print(USAGE)
+		print_help_topics()
 	case:
 		fmt.eprintf("kroken: unknown command %q\n\n", os.args[1])
 		fmt.eprint(USAGE)
@@ -196,6 +215,34 @@ run_complete :: proc(arguments: []string) -> Exit_Code {
 	fmt.eprintf("kroken: done in %.1f s via %s, %s\n", time.duration_seconds(time.since(started)), chosen.name, outcome.result.summary)
 	print_log_hint(run_directory, is_temporary)
 	return .Success
+}
+
+run_help :: proc(arguments: []string) -> Exit_Code {
+	if len(arguments) == 0 {
+		fmt.print(USAGE)
+		print_help_topics()
+		return .Success
+	}
+	if len(arguments) > 1 {
+		fmt.eprintln("kroken: help takes at most one topic")
+		return .Usage
+	}
+	for topic in HELP_TOPICS {
+		if topic.name == arguments[0] {
+			fmt.print(topic.text)
+			return .Success
+		}
+	}
+	fmt.eprintf("kroken: unknown help topic %q\n", arguments[0])
+	print_help_topics()
+	return .Usage
+}
+
+print_help_topics :: proc() {
+	fmt.println("\nhelp topics (kroken help <topic>, also in man kroken):")
+	for topic in HELP_TOPICS {
+		fmt.printf("  %-9s %s\n", topic.name, topic.summary)
+	}
 }
 
 run_config :: proc(arguments: []string) -> Exit_Code {

@@ -6,7 +6,8 @@ LLM coding harness driven from a text editor, written in Odin. Wraps `claude -p`
 
 - `scripts/setup-toolchain.sh` installs the pinned Odin release into `toolchain/` (git ignored). Run once per clone.
 - `scripts/check.sh` is the quality gate: `odin test` for every package under `src/` with `-vet -strict-style -warnings-as-errors`, then `scripts/build.sh`.
-- `scripts/build.sh` builds `build/kroken`. `scripts/install.sh [prefix]` builds and copies it to `<prefix>/bin` (default `~/.local`).
+- `scripts/build.sh` builds `build/kroken`. `scripts/install.sh [prefix]` builds and copies it to `<prefix>/bin` (default `~/.local`), plus the man page to `<prefix>/share/man/man1` when go-md2man is installed.
+- `scripts/build-man.sh` assembles `build/kroken.1` from `doc/man/kroken.md`, the binary's `--help` output, and the documents under `doc/`. The same documents are embedded in the binary with `#load` for `kroken help`; edit `doc/*.md` and both follow.
 - CI (`.github/workflows/ci.yml`) runs the same two scripts. A `vX.Y.Z` tag triggers `.github/workflows/release.yml`, which refuses the tag unless `VERSION` in `src/cli/main.odin` matches, then attaches the binary to a GitHub release.
 - Never bump the Odin version casually. Odin is pre-1.0 and monthly releases break things. Bumping means updating tag and sha256 in `scripts/setup-toolchain.sh` and running the full check.
 
@@ -18,7 +19,7 @@ LLM coding harness driven from a text editor, written in Odin. Wraps `claude -p`
 - `src/backend/` is the backend interface plus process execution; `src/backend/claude/` and `src/backend/codex/` each assemble one command line and parse one output format. Nothing outside a backend's own package may assume that backend; the CLI only holds the list.
 - Packages are imported through the `kroken` collection: `import "kroken:config"`.
 - Configuration files are SJSON (Bitsquid simplified JSON); never reintroduce a hand-written parser, the core library's SJSON mode is the parser.
-- `doc/` holds the living documentation, `doc/log/` write-once decision logs by date, `doc/work/` work items.
+- `doc/` holds the living documentation, `doc/log/` write-once decision logs by date, `doc/work/` work items, `doc/man/` the man-only sections of `kroken(1)`.
 - `tmp/`, `work/`, `build/`, `toolchain/` are git ignored.
 
 ## Conventions
@@ -26,5 +27,5 @@ LLM coding harness driven from a text editor, written in Odin. Wraps `claude -p`
 - Odin style: snake_case procedures and variables, Ada_Case types, SCREAMING_CASE constants. Never abbreviate identifiers (`index`, not `i`; `error`, not `err`).
 - Small pure procedures, structs as data carriers. Side effects (filesystem, processes) live at the edges: `src/cli/` and the run procedure in `src/claude/`.
 - Every package has tests next to the code (`*_test.odin`). Tests must not require network access or a working `claude` binary.
-- Keep `README.md`, `DESIGN.md`, `doc/configuration.md`, and `doc/editor-integration.md` in sync with behaviour changes in the same commit.
+- Keep `README.md`, `DESIGN.md`, `doc/configuration.md`, `doc/editor-integration.md`, and `doc/man/kroken.md` in sync with behaviour changes in the same commit. The first three are also what `kroken help` prints.
 - Markdown: one paragraph per line, never reflow.

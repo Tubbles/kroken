@@ -33,6 +33,12 @@ scripts/check.sh             # runs the tests and builds build/kroken, without i
 
 For hacking on kroken, a symlink keeps every rebuild live instead: `ln -s "$PWD/build/kroken" ~/.local/bin/kroken`.
 
+`scripts/install.sh` also installs `man kroken` when [go-md2man](https://github.com/cpuguy83/go-md2man) is available (`go install github.com/cpuguy83/go-md2man/v2@latest`). Releases carry the built `kroken.1` as an asset too.
+
+## Documentation
+
+The documentation lives in `doc/` and ships inside the binary: `kroken help` lists the topics, `kroken help config` prints the configuration reference, `kroken help editor` the editor protocol. The man page is assembled from the same files by `scripts/build-man.sh`, so there is one source for all three.
+
 ## Releasing
 
 Bump `VERSION` in `src/cli/main.odin`, commit, tag `vX.Y.Z`, push the tag. The release workflow rebuilds, refuses a tag whose version differs from what the binary reports, and attaches `kroken-linux-amd64` plus its sha256 to a GitHub release.
@@ -49,7 +55,7 @@ kroken version
 
 The selection is taken from `--selection-file` if given, else from stdin when something is piped in, else from lines `--start` through `--end` of the file. A terminal on stdin is never read.
 
-See [doc/README.md](doc/README.md) for the configuration reference and the editor integration protocol.
+See [doc/README.md](doc/README.md) for the configuration reference and the editor integration protocol, or run `kroken help`.
 
 ## Editor integration
 

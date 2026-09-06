@@ -24,11 +24,17 @@ jobs:
             echo "binary reports ${actual} but the tag is ${GITHUB_REF_NAME}; bump VERSION in src/cli/main.odin" >&2
             exit 1
           fi
+      - name: Build the man page
+        run: |
+          go install github.com/cpuguy83/go-md2man/v2@v2.0.7
+          scripts/build-man.sh
+          test -f build/kroken.1
       - name: Package
         run: |
           cp build/kroken kroken-linux-amd64
           sha256sum kroken-linux-amd64 > kroken-linux-amd64.sha256
+          cp build/kroken.1 kroken.1
       - name: Create the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${GITHUB_REF_NAME}" kroken-linux-amd64 kroken-linux-amd64.sha256 --title "${GITHUB_REF_NAME}" --generate-notes
+        run: gh release create "${GITHUB_REF_NAME}" kroken-linux-amd64 kroken-linux-amd64.sha256 kroken.1 --title "${GITHUB_REF_NAME}" --generate-notes
