@@ -34,6 +34,10 @@ kroken version
 
 See [doc/README.md](doc/README.md) for the configuration reference and the editor integration protocol.
 
+## Editor integration
+
+A micro plugin ships with the [Tubbles/micro](https://github.com/Tubbles/micro) fork: select, run `> kroken` (or press Alt-Enter), keep editing. [doc/editor-integration.md](doc/editor-integration.md) has the protocol for other editors.
+
 ## Configuration
 
 TOML files, layered from general to specific. Later layers override earlier ones key by key:

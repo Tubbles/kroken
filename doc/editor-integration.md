@@ -11,7 +11,7 @@ kroken complete --file <path> [--start LINE[:COLUMN]] [--end LINE[:COLUMN]] [--s
 ```
 
 - The selection is read from `--selection-file` when given, otherwise from stdin until end of file. Prefer the file when your editor cannot close the child's stdin; micro's job API, for example, can write to stdin but never closes it.
-- `--file` is the path of the buffer the selection came from. Its directory becomes the working directory of `claude`, which is what makes every `CLAUDE.md` above the file load. `--start` and `--end` are optional and only inform the prompt.
+- `--file` is the path of the buffer the selection came from. Its directory becomes the working directory of `claude`, which is what makes every `CLAUDE.md` above the file load. `--start` and `--end` are optional and only inform the prompt. Positions are 1-based and the end is inclusive.
 - On success the replacement text is printed to stdout with nothing added, not even a trailing newline. Paste it over the selection verbatim.
 - stderr carries human-readable status: a final `kroken: done in 4.2 s, 3 turns, $0.0421` line, the log directory, and any error. Show it in the status bar or ignore it.
 - Exit codes: `0` success, `1` claude ran and reported an error (stderr says why), `2` bad arguments or configuration, `3` claude could not be started or returned something unparseable. Anything but `0` means stdout holds no replacement.
@@ -20,52 +20,18 @@ A run takes anywhere from a few seconds to a few minutes depending on the model,
 
 ## Pasting back after edits
 
-The user keeps editing while the job runs, so line numbers captured at trigger time may be stale when the result arrives. Two robust strategies:
+The user keeps editing while the job runs, so positions captured at trigger time may be stale when the result arrives. Two strategies:
 
-1. Remember the original selection text, and when the job exits search the buffer for that exact text and replace the first match. Simple and correct as long as the selection is not duplicated verbatim elsewhere.
-2. Use editor marks that move with edits, if the editor has them.
+1. Editor marks that move with edits, if the editor has them. Exact, and cheap to make safe: compare the marked text with the selection you sent before replacing it, and refuse when they differ, so edits inside the region are never clobbered.
+2. Remember the original selection text, and when the job exits search the buffer for that exact text and replace the first match. Simple, but it picks the wrong spot when the selection is duplicated elsewhere, and the editor's search has to be able to match across lines.
 
-## micro sketch
+## micro
 
-An illustration of strategy 1 with micro's Lua API, using a job callback. It is a starting point, not a supported plugin.
+The micro plugin lives in the [Tubbles/micro](https://github.com/Tubbles/micro) fork as the bundled `kroken` plugin (`runtime/plugins/kroken/`, branch `kroken`). Run `> help kroken` inside that build for usage. It uses strategy 1 with buffer anchors added to the fork for the purpose, and forwards any command arguments to `kroken complete`, so `> kroken --profile fast` and `> kroken --dry-run` work.
 
-```lua
-local micro = import("micro")
-local shell = import("micro/shell")
-local util = import("micro/util")
-local ioutil = import("io/ioutil")
+Things learned about micro's Lua job API while writing it, for anyone porting to a stock micro:
 
-local function onExit(output, args)
-    local buf, original = args[1], args[2]
-    local match, found = buf:FindNext(original, buf:Start(), buf:End(), buf:Start(), true, false)
-    if not found then
-        micro.InfoBar():Error("kroken: original selection no longer found")
-        return
-    end
-    buf:Replace(match[1], match[2], output)
-    micro.InfoBar():Message("kroken: replaced selection")
-end
-
-function krokenComplete(bp)
-    local cursor = bp.Buf:GetActiveCursor()
-    if not cursor:HasSelection() then
-        micro.InfoBar():Error("kroken: select something first")
-        return
-    end
-    local original = util.String(cursor:GetSelection())
-    local selectionFile = os.tmpname()
-    ioutil.WriteFile(selectionFile, original, 384)
-    local startLine = cursor.CurSelection[1].Y + 1
-    local endLine = cursor.CurSelection[2].Y + 1
-    shell.JobSpawn("kroken", {
-        "complete",
-        "--file", bp.Buf.AbsPath,
-        "--start", tostring(startLine),
-        "--end", tostring(endLine),
-        "--selection-file", selectionFile,
-    }, nil, nil, onExit, bp.Buf, original)
-    micro.InfoBar():Message("kroken: running")
-end
-```
-
-Bind it in `bindings.json`, for example `"Alt-Enter": "lua:initlua.krokenComplete"`. Every trigger spawns its own process, so overlapping runs need no extra bookkeeping. The temporary selection file is left for the operating system to clean up; delete it in `onExit` if that bothers you.
+- `shell.JobSpawn` writes stdout and stderr into one buffer and hands the mix to the exit callback, so pasting the exit callback's argument would also paste the status line. Collect the streams with the separate `onStdout` and `onStderr` callbacks and ignore the exit callback's argument.
+- The exit callback carries no exit status. Read `job.ProcessState:ExitCode()` on the value `JobSpawn` returned. `ProcessState` is nil when the executable could not be started at all.
+- `Buffer:FindNext` matches line by line, so strategy 2 needs its own search to find a multi-line selection.
+- A job's stdin is never closed, hence `--selection-file`.
