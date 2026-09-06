@@ -6,8 +6,8 @@ LLM coding harness driven from a text editor, written in Odin. Wraps `claude -p`
 
 - `scripts/setup-toolchain.sh` installs the pinned Odin release into `toolchain/` (git ignored). Run once per clone.
 - `scripts/check.sh` is the quality gate: `odin test` for every package under `src/` with `-vet -strict-style -warnings-as-errors`, then `scripts/build.sh`.
-- `scripts/build.sh` builds `build/kroken`.
-- CI (`.github/workflows/ci.yml`) runs the same two scripts.
+- `scripts/build.sh` builds `build/kroken`. `scripts/install.sh [prefix]` builds and copies it to `<prefix>/bin` (default `~/.local`).
+- CI (`.github/workflows/ci.yml`) runs the same two scripts. A `vX.Y.Z` tag triggers `.github/workflows/release.yml`, which refuses the tag unless `VERSION` in `src/cli/main.odin` matches, then attaches the binary to a GitHub release.
 - Never bump the Odin version casually. Odin is pre-1.0 and monthly releases break things. Bumping means updating tag and sha256 in `scripts/setup-toolchain.sh` and running the full check.
 
 ## Layout

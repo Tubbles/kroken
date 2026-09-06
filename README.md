@@ -14,14 +14,28 @@ Status: early. Linux amd64 only for now.
 
 Each invocation is an independent process, so any number of them can run in parallel while you keep editing.
 
-## Building
+## Installing
+
+From a release, no toolchain needed (Linux amd64):
 
 ```sh
-scripts/setup-toolchain.sh   # downloads the pinned Odin release into toolchain/ (git ignored)
-scripts/check.sh             # runs the tests and builds build/kroken
+gh release download --repo Tubbles/kroken --pattern kroken-linux-amd64 --output ~/.local/bin/kroken
+chmod +x ~/.local/bin/kroken
 ```
 
-Put `build/kroken` on your `PATH`, for example with a symlink into `~/.local/bin`.
+From source:
+
+```sh
+scripts/setup-toolchain.sh   # once per clone: downloads the pinned Odin release into toolchain/ (git ignored)
+scripts/install.sh           # builds and copies build/kroken to ~/.local/bin; pass a prefix or set PREFIX to change
+scripts/check.sh             # runs the tests and builds build/kroken, without installing
+```
+
+For hacking on kroken, a symlink keeps every rebuild live instead: `ln -s "$PWD/build/kroken" ~/.local/bin/kroken`.
+
+## Releasing
+
+Bump `VERSION` in `src/cli/main.odin`, commit, tag `vX.Y.Z`, push the tag. The release workflow rebuilds, refuses a tag whose version differs from what the binary reports, and attaches `kroken-linux-amd64` plus its sha256 to a GitHub release.
 
 ## Usage
 
