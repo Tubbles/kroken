@@ -8,7 +8,8 @@ A dependable editor-driven completion harness: select, trigger, keep working, ge
 
 1. **Core loop** (done, see `doc/work/WI-0001-core-loop.md`; configuration moved from TOML to SJSON on 2026-09-06): SJSON config, layered discovery, prompt rendering, `claude -p` execution with structured output, run logs, CI.
 2. **Editor integration** (done for micro, 2026-09-06): the bundled `kroken` plugin in the Tubbles/micro fork spawns kroken as a background job, tracks the selection with a buffer anchor, and pastes the result. It lives outside this repository, which documents the protocol in `doc/editor-integration.md`.
-3. **Quality of life**: named prompt presets selectable from the editor (explain, refactor, write tests), session resume for follow-up instructions, cost reporting.
+3. **Backends and manual** (done 2026-09-06, see `doc/work/WI-0002-backends-and-manual.md`): Claude Code and OpenAI Codex as equal backends behind one interface, documentation shipped as `kroken help` and `man kroken` from a single source.
+4. **Quality of life**: named prompt presets selectable from the editor (explain, refactor, write tests), session resume for follow-up instructions, cost reporting.
 
 ## Not planned
 

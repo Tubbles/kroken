@@ -16,7 +16,7 @@ import "kroken:backend/codex"
 import "kroken:config"
 import "kroken:prompt"
 
-VERSION :: "0.2.0"
+VERSION :: "0.3.0"
 
 Exit_Code :: enum int {
 	Success       = 0,
